@@ -1,6 +1,7 @@
 import type { Logger, ProjectOptions } from "../types.js";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import { scaffoldFabric } from "../loaders/fabric.js";
 import { scaffoldForge } from "../loaders/forge.js";
 import { scaffoldNeoForge } from "../loaders/neoforge.js";
@@ -19,8 +20,30 @@ export function pascalCase(input: string): string {
   return /^[A-Za-z]/.test(name) ? name : `Mod${name}`;
 }
 
+/**
+ * Scaffold is a creation-only operation.  Keep this check at the lowest shared
+ * boundary so CLI, GUI, source jobs, and variant generation cannot ever lay a
+ * loader template over an imported project by mistake.
+ */
+export function assertFreshScaffoldTarget(targetDir: string): void {
+  const resolved = path.resolve(targetDir);
+  if (!fs.existsSync(resolved)) return;
+
+  const stat = fs.statSync(resolved);
+  if (!stat.isDirectory()) {
+    throw new Error(`Scaffold target exists and is not a directory: ${resolved}`);
+  }
+
+  if (fs.readdirSync(resolved).length > 0) {
+    throw new Error(
+      `Scaffold target must be a new or empty directory; refusing to modify existing project: ${resolved}`,
+    );
+  }
+}
+
 /** 下载模板、注入镜像、初始化 git — CLI 与变体生成共用 */
 export async function scaffoldProject(opts: ProjectOptions, log: Logger): Promise<void> {
+  assertFreshScaffoldTarget(opts.targetDir);
   await fs.promises.mkdir(opts.targetDir, { recursive: true });
 
   if (opts.loader === "fabric") await scaffoldFabric(opts, log);
