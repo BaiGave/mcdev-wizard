@@ -11,3 +11,5 @@ release/
 resources/tools/cfr.jar
 
 projects/*/
+/.tmp/
+/worktrees/

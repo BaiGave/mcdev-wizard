@@ -43,7 +43,7 @@ const appPaths = await packager({
   icon: path.join(root, "gui", "assets", "brand", "dmcl-app-icon.ico"),
   extraResource: [path.join(root, "resources", "tools")],
   ignore: [
-    /^\/(?:\.git|\.github|tests|src|scripts|resources|release|_e2e_)(?:\/|$)/,
+    /^\/(?:\.git|\.github|tests|src|scripts|resources|release|_e2e_|projects|worktrees|\.tmp)(?:\/|$)/,
   ],
   win32metadata: {
     CompanyName: "DMCL",
