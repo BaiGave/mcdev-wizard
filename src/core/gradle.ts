@@ -19,6 +19,122 @@ export const CLIENT_FAIL = [
   /有不兼容的模组/i,
 ];
 
+/** DMCL 可重建 Gradle 缓存的总上限；JDK 不计入此上限。 */
+export const DMCL_GRADLE_CACHE_MAX_BYTES = 24 * 1024 ** 3;
+const CACHE_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+export interface DmclGradleCachePruneOptions {
+  maxBytes?: number;
+}
+
+export interface DmclGradleCachePruneResult {
+  scannedBytes: number;
+  deletedBytes: number;
+  remainingBytes: number;
+  skipped: boolean;
+}
+
+interface CacheFile {
+  path: string;
+  size: number;
+  mtimeMs: number;
+}
+
+let activeGradleProcesses = 0;
+let lastCachePruneAt = 0;
+let cachePruneInflight: Promise<DmclGradleCachePruneResult> | null = null;
+
+async function collectRebuildableCacheFiles(dir: string, files: CacheFile[]): Promise<void> {
+  let entries: fs.Dirent[];
+  try {
+    if ((await fs.promises.lstat(dir)).isSymbolicLink()) return;
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      if (["jdks", "dmcl-jdk8"].includes(entry.name.toLowerCase())) continue;
+      await collectRebuildableCacheFiles(entryPath, files);
+      continue;
+    }
+    if (!entry.isFile() || /\.(?:lock|lck)$/i.test(entry.name)) continue;
+    try {
+      const stat = await fs.promises.stat(entryPath);
+      files.push({ path: entryPath, size: stat.size, mtimeMs: stat.mtimeMs });
+    } catch {
+      // Files can disappear while Gradle rotates its cache metadata.
+    }
+  }
+}
+
+/**
+ * 删除最旧的可重建 Gradle 缓存，避免 DMCL 的隔离目录无限增长。
+ * 只扫描 DMCL_HOME/cache 下的 Gradle 用户目录，并跳过所有名为 jdks 的目录。
+ */
+export async function pruneDmclGradleCache(
+  options: DmclGradleCachePruneOptions = {},
+): Promise<DmclGradleCachePruneResult> {
+  if (activeGradleProcesses > 0) {
+    return { scannedBytes: 0, deletedBytes: 0, remainingBytes: 0, skipped: true };
+  }
+  if (cachePruneInflight) return cachePruneInflight;
+
+  const now = Date.now();
+  if (options.maxBytes === undefined && now - lastCachePruneAt < CACHE_PRUNE_INTERVAL_MS) {
+    return { scannedBytes: 0, deletedBytes: 0, remainingBytes: 0, skipped: true };
+  }
+
+  const run = async (): Promise<DmclGradleCachePruneResult> => {
+    const cacheRoot = path.resolve(path.join(getDmclHome(), "cache"));
+    const roots = [
+      path.join(cacheRoot, "gradle"),
+      path.join(cacheRoot, "source-gradle"),
+    ];
+    const files: CacheFile[] = [];
+    for (const root of roots) await collectRebuildableCacheFiles(root, files);
+    const scannedBytes = files.reduce((sum, file) => sum + file.size, 0);
+    const maxBytes = options.maxBytes ?? DMCL_GRADLE_CACHE_MAX_BYTES;
+    let remainingBytes = scannedBytes;
+    let deletedBytes = 0;
+
+    files.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const file of files) {
+      if (remainingBytes <= maxBytes || activeGradleProcesses > 0) break;
+      try {
+        await fs.promises.rm(file.path, { force: true });
+        remainingBytes -= file.size;
+        deletedBytes += file.size;
+      } catch {
+        // Locked or concurrently replaced cache files are left for the next pass.
+      }
+    }
+
+    lastCachePruneAt = Date.now();
+    return { scannedBytes, deletedBytes, remainingBytes, skipped: false };
+  };
+
+  cachePruneInflight = run().finally(() => {
+    cachePruneInflight = null;
+  });
+  return cachePruneInflight;
+}
+
+function trackGradleProcess(proc: ChildProcess): void {
+  activeGradleProcesses++;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    activeGradleProcesses = Math.max(0, activeGradleProcesses - 1);
+  };
+  proc.once("close", release);
+  proc.once("error", release);
+}
+
 /** 从 Fabric Loader 日志提取「模组不兼容」的简短说明 */
 export function summarizeFabricIncompatibleModsError(log: string): string | null {
   if (!/Incompatible mods found|有不兼容的模组/i.test(log)) return null;
@@ -132,6 +248,7 @@ export function gradleSpawn(
     env: { ...buildGradleEnv(targetDir), ...envOverrides },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  trackGradleProcess(proc);
   return { proc, isWin };
 }
 
@@ -212,6 +329,7 @@ export async function runGradleTask(
   if (!hasGradlew(targetDir)) return 1;
   await ensureGradlewExecutable(targetDir);
   if (cancelledCode(opts) !== null) return 1;
+  await pruneDmclGradleCache();
 
   const { proc, isWin } = gradleSpawn(targetDir, tasks, opts?.env);
   opts?.onProc?.(proc, isWin);
@@ -304,6 +422,7 @@ export async function runGradleClientTask(
   if (!hasGradlew(targetDir)) return 1;
   await ensureGradlewExecutable(targetDir);
   if (cancelledCode(opts) !== null) return 1;
+  await pruneDmclGradleCache();
 
   try {
     const { ensureFabricApiVersion } = await import("../loaders/fabric-toolchain.js");
