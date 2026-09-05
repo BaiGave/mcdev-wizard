@@ -14,6 +14,7 @@ async function fetchWithRetry(url: string, opts: FetchOpts = {}): Promise<Respon
   for (let i = 0; i <= retries; i++) {
     try {
       const res = await fetch(url, {
+        redirect: "follow",
         headers: { "user-agent": UA },
         signal: AbortSignal.timeout(timeoutMs),
       });
@@ -21,10 +22,11 @@ async function fetchWithRetry(url: string, opts: FetchOpts = {}): Promise<Respon
       return res;
     } catch (err) {
       lastErr = err;
+      if (i < retries) await new Promise((resolve) => setTimeout(resolve, 450 * (i + 1)));
     }
   }
   const reason = lastErr instanceof Error ? lastErr.message : String(lastErr);
-  throw new Error(`请求失败：${url}（${reason}）`);
+  throw new Error(`Request failed: ${url} (${reason || "unknown network error"})`);
 }
 
 export async function fetchJson<T>(url: string, opts?: FetchOpts): Promise<T> {
@@ -55,7 +57,7 @@ export async function probeUrl(url: string, opts?: FetchOpts): Promise<UrlProbe>
       if (head.ok) return "ok";
       if (head.status === 404 || head.status === 410) return "missing";
     } catch {
-      // HEAD 可能被 CDN 拒绝，继续 Range GET
+      // Some CDNs reject HEAD. Try a tiny GET before deciding it is unreachable.
     }
     try {
       const res = await fetch(url, {
@@ -77,12 +79,31 @@ export async function urlExists(url: string, opts?: FetchOpts): Promise<boolean>
   return (await probeUrl(url, opts)) === "ok";
 }
 
-export async function downloadFile(url: string, dest: string): Promise<void> {
-  const res = await fetch(url, { headers: { "user-agent": UA } });
-  if (!res.ok) {
-    throw new Error(`下载失败 HTTP ${res.status}：${url}`);
+export async function downloadFile(url: string, dest: string, opts: FetchOpts = {}): Promise<void> {
+  const retries = opts.retries ?? 2;
+  const timeoutMs = opts.timeoutMs ?? 45_000;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        redirect: "follow",
+        headers: {
+          "user-agent": UA,
+          "accept": "*/*",
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 1) throw new Error("empty response");
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.writeFile(dest, buf);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) await new Promise((resolve) => setTimeout(resolve, 650 * (attempt + 1)));
+    }
   }
-  const buf = Buffer.from(await res.arrayBuffer());
-  await fs.promises.mkdir(path.dirname(dest), { recursive: true });
-  await fs.promises.writeFile(dest, buf);
+  const reason = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  throw new Error(`Download failed: ${url} (${reason || "unknown network error"})`);
 }

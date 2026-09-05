@@ -1031,8 +1031,22 @@ ${content.slice(-MAX_LOG_MODAL_CHARS)}`;
         var statusText = v.buildStatus === "success" ? "\u5C31\u7EEA" : v.buildStatus === "failed" ? "\u5931\u8D25" : v.buildStatus === "building" ? "\u4EFB\u52A1\u8FDB\u884C\u4E2D" : "\u672A\u9A8C\u8BC1";
         var missingBtn = "";
         var sourceReady = v.sourceStatus?.ready === true;
-        var sourceText = sourceReady ? "\u5F00\u53D1\u6E90\u7801\u5DF2\u51C6\u5907 \xB7 MC + " + (v.sourceStatus.modCount || 0) + " \u4E2A\u524D\u7F6E" : "\u5F00\u53D1\u6E90\u7801\u5C1A\u672A\u51C6\u5907";
-        item.innerHTML = '<div class="variant-item-header"><span class="loader-badge loader-' + esc(v.loader) + '">' + loaderIcon(v.loader) + "</span><div><h4>" + LOADER_LABELS[v.loader] + " " + esc(v.mcVersion) + " <span>\xB7 v" + esc(v.modVersion) + '</span></h4><div class="path" title="' + esc(v.projectPath) + '">' + esc(v.projectPath) + '</div><div class="variant-status"><span class="status-dot"></span>' + statusText + '</div><div class="variant-source-state' + (sourceReady ? " ready" : "") + '">' + icon("sparkles") + esc(sourceText) + '</div></div></div><div class="variant-actions"><button class="btn btn-primary btn-sm" data-action="build">' + icon("build") + '\u6784\u5EFA</button><button class="btn btn-secondary btn-sm" data-action="run">' + icon("play") + '\u542F\u52A8</button><button class="btn btn-secondary btn-sm" data-action="logs">' + icon("terminal") + '\u65E5\u5FD7</button><button class="btn btn-secondary btn-sm btn-prepare-sources" data-action="sources">' + icon(sourceReady ? "folder" : "sparkles") + (sourceReady ? "\u6253\u5F00\u5F00\u53D1\u6E90\u7801" : "\u51C6\u5907\u5F00\u53D1\u6E90\u7801") + '</button><button class="btn btn-icon" data-action="folder" title="\u6253\u5F00\u9879\u76EE\u6587\u4EF6\u5939" aria-label="\u6253\u5F00\u9879\u76EE\u6587\u4EF6\u5939">' + icon("folder") + '</button><details class="action-menu"><summary class="btn btn-quiet btn-sm" aria-label="\u66F4\u591A\u53D8\u4F53\u64CD\u4F5C">' + icon("more") + '</summary><div class="action-menu-popover"><button data-action="cursor">\u7528 Cursor \u6253\u5F00</button><button data-action="relocate">\u91CD\u65B0\u5B9A\u4F4D\u9879\u76EE</button>' + missingBtn + (sourceReady ? '<button data-action="sources-refresh">\u91CD\u65B0\u51C6\u5907\u5F00\u53D1\u6E90\u7801</button>' : "") + '<span class="menu-separator"></span><button data-action="unlink">\u4EC5\u79FB\u9664\u767B\u8BB0</button><button class="menu-danger" data-action="delete">\u5220\u9664\u53D8\u4F53</button></div></details></div>';
+        var sourceMods = v.sourceStatus?.mods || [];
+        var sourceReports = sourceMods.filter(function(m) {
+          return !!m.reportFilePath;
+        });
+        var sourceText = sourceReady ? v.sourceStatus?.minecraftReady ? "\u5F00\u53D1\u6E90\u7801\u5DF2\u51C6\u5907 \xB7 MC + " + (v.sourceStatus.modCount || 0) + " \u4E2A\u6A21\u7EC4" : (v.sourceStatus.modCount || 0) + " \u4E2A\u6A21\u7EC4\u6E90\u7801\u5DF2\u51C6\u5907" : "\u5F00\u53D1\u6E90\u7801\u5C1A\u672A\u51C6\u5907";
+        if (sourceReady && sourceReports.length) sourceText += " / " + sourceReports.length + " reports";
+        item.innerHTML = '<div class="variant-item-header"><span class="loader-badge loader-' + esc(v.loader) + '">' + loaderIcon(v.loader) + "</span><div><h4>" + LOADER_LABELS[v.loader] + " " + esc(v.mcVersion) + " <span>\xB7 v" + esc(v.modVersion) + '</span></h4><div class="path" title="' + esc(v.projectPath) + '">' + esc(v.projectPath) + '</div><div class="variant-status"><span class="status-dot"></span>' + statusText + '</div><div class="variant-source-state' + (sourceReady ? " ready" : "") + '">' + icon("sparkles") + esc(sourceText) + '</div></div></div><div class="variant-actions"><button class="btn btn-primary btn-sm" data-action="build">' + icon("build") + '\u6784\u5EFA</button><button class="btn btn-secondary btn-sm" data-action="run">' + icon("play") + '\u542F\u52A8</button><button class="btn btn-secondary btn-sm btn-prepare-sources" data-action="source-hub">' + icon(sourceReady ? "folder" : "sparkles") + '\u6E90\u7801</button><button class="btn btn-icon" data-action="folder" title="\u6253\u5F00\u9879\u76EE\u6587\u4EF6\u5939" aria-label="\u6253\u5F00\u9879\u76EE\u6587\u4EF6\u5939">' + icon("folder") + '</button><details class="action-menu"><summary class="btn btn-quiet btn-sm" aria-label="\u66F4\u591A\u53D8\u4F53\u64CD\u4F5C">' + icon("more") + '</summary><div class="action-menu-popover"><button data-action="logs">\u65E5\u5FD7</button><button data-action="cursor">\u7528 Cursor \u6253\u5F00</button><button data-action="relocate">\u91CD\u65B0\u5B9A\u4F4D\u9879\u76EE</button>' + missingBtn + '<span class="menu-separator"></span><button data-action="unlink">\u4EC5\u79FB\u9664\u767B\u8BB0</button><button class="menu-danger" data-action="delete">\u5220\u9664\u53D8\u4F53</button></div></details></div>';
+        if (sourceReports.length) {
+          var popover = item.querySelector(".action-menu-popover");
+          var separator = popover?.querySelector(".menu-separator");
+          var reportButton = document.createElement("button");
+          reportButton.type = "button";
+          reportButton.dataset.action = "sources-report";
+          reportButton.textContent = "Open dependency API reports";
+          popover?.insertBefore(reportButton, separator || null);
+        }
         item.querySelectorAll("[data-action]").forEach(function(btn) {
           btn.addEventListener("click", function(e) {
             e.stopPropagation();
@@ -1046,15 +1060,283 @@ ${content.slice(-MAX_LOG_MODAL_CHARS)}`;
         list.appendChild(item);
       });
     }
-    async function prepareVariantSources(modId, variant, force) {
+    async function openVariantSourceReports(variant) {
+      var mods = (variant.sourceStatus?.mods || []).filter(function(m) {
+        return !!m.reportFilePath;
+      });
+      if (!mods.length) {
+        notify("No dependency API reports are available yet", "warning");
+        return;
+      }
+      if (mods.length === 1) {
+        await api("/api/open-folder", { method: "POST", body: { path: mods[0].reportFilePath } });
+        notify("Opened dependency API report");
+        return;
+      }
+      var reportRoot = variant.sourceStatus?.rootPath ? variant.sourceStatus.rootPath + "\\mods" : mods[0].reportFilePath;
+      await api("/api/open-folder", { method: "POST", body: { path: reportRoot } });
+      showLogModal(
+        "Dependency API Reports",
+        mods.map(function(m) {
+          return [
+            (m.modName || m.modId) + " " + (m.modVersion || ""),
+            "  source: " + (m.sourceKind || "unknown") + (m.confidence ? " / " + m.confidence : ""),
+            "  license: " + (m.license?.id || m.license?.name || "unknown"),
+            "  report: " + m.reportFilePath
+          ].join("\n");
+        }).join("\n\n")
+      );
+      notify("Opened dependency reports folder");
+    }
+    var sourceHubState = {
+      modId: "",
+      variant: null
+    };
+    function closeSourceHub() {
+      $("source-hub-modal")?.classList.remove("visible");
+    }
+    async function openSourceHub(modId, variant) {
+      sourceHubState.modId = modId;
+      sourceHubState.variant = variant;
+      var sourceStatus = variant.sourceStatus || {};
+      var minecraftReady = sourceStatus.minecraftReady === true;
+      var modCount = sourceStatus.modCount || 0;
+      setText("source-hub-subtitle", (LOADER_LABELS[variant.loader] || variant.loader) + " " + variant.mcVersion);
+      setText(
+        "source-hub-project-status",
+        minecraftReady ? "Minecraft \u5DF2\u5C31\u7EEA \xB7 " + modCount + " \u4E2A\u6A21\u7EC4\u6E90\u7801" : "\u5C1A\u672A\u6295\u5F71\u5230\u9879\u76EE \xB7 " + modCount + " \u4E2A\u6A21\u7EC4\u6E90\u7801"
+      );
+      var projectButton = $("source-hub-project");
+      if (projectButton) projectButton.textContent = minecraftReady ? "\u6253\u5F00" : "\u51C6\u5907";
+      setText("source-hub-runtime-status", "\u6B63\u5728\u626B\u63CF run/mods");
+      $("source-hub-modal")?.classList.add("visible");
+      try {
+        var data = await api("/api/variants/" + encodeURIComponent(variant.id) + "/runtime-mods");
+        var runtimeMods = (data.mods || []).filter(function(item) {
+          return item.supported;
+        });
+        var runtimeReady = runtimeMods.filter(function(item) {
+          return item.source?.ready;
+        }).length;
+        setText("source-hub-runtime-status", runtimeMods.length ? runtimeMods.length + " \u4E2A\u6A21\u7EC4 \xB7 " + runtimeReady + " \u5DF2\u51C6\u5907" : "run/mods \u4E2D\u6CA1\u6709\u6A21\u7EC4");
+      } catch {
+        setText("source-hub-runtime-status", "run/mods \u626B\u63CF\u5931\u8D25");
+      }
+    }
+    $("source-hub-close")?.addEventListener("click", closeSourceHub);
+    $("source-hub-project")?.addEventListener("click", function() {
+      var variant = sourceHubState.variant;
+      if (!variant) return;
+      closeSourceHub();
+      if (variant.sourceStatus?.minecraftReady && variant.sourceStatus?.rootPath) {
+        void api("/api/open-folder", { method: "POST", body: { path: variant.sourceStatus.rootPath } });
+        return;
+      }
+      void prepareVariantSources(sourceHubState.modId, variant, false, false);
+    });
+    $("source-hub-runtime")?.addEventListener("click", function() {
+      var variant = sourceHubState.variant;
+      if (!variant) return;
+      closeSourceHub();
+      void openRuntimeSources(variant);
+    });
+    $("source-hub-adapt")?.addEventListener("click", function() {
+      var variant = sourceHubState.variant;
+      if (!variant) return;
+      closeSourceHub();
+      openAdaptCenterForVariant(variant);
+    });
+    $("source-hub-gradle")?.addEventListener("click", function() {
+      var variant = sourceHubState.variant;
+      if (!variant) return;
+      closeSourceHub();
+      void prepareVariantSources(sourceHubState.modId, variant, false, true);
+    });
+    var runtimeSourcesState = {
+      variant: null,
+      mods: [],
+      selected: /* @__PURE__ */ new Set()
+    };
+    function runtimeSourceBadge(item) {
+      if (!item.supported) return { label: "\u672A\u8BC6\u522B", className: "unsupported" };
+      if (!item.source?.ready) return { label: "\u672A\u51C6\u5907", className: "" };
+      if (item.source.sourceKind === "github-source") return { label: "GitHub \u6E90\u7801", className: "ready" };
+      if (item.source.sourceKind === "sources-jar") return { label: "\u6E90\u7801\u5305", className: "ready" };
+      if (item.source.sourceKind === "cfr-decompile") return { label: "CFR \u53CD\u7F16\u8BD1", className: "cfr" };
+      return { label: "\u5DF2\u51C6\u5907", className: "ready" };
+    }
+    function closeRuntimeSourcesModal() {
+      $("runtime-sources-modal")?.classList.remove("visible");
+    }
+    function renderRuntimeSources() {
+      var list = $("runtime-sources-list");
+      if (!list) return;
+      var mods = runtimeSourcesState.mods;
+      var supported = mods.filter(function(item) {
+        return item.supported;
+      });
+      var ready = supported.filter(function(item) {
+        return item.source?.ready;
+      });
+      setText("runtime-sources-summary", mods.length ? mods.length + " \u4E2A JAR \xB7 " + ready.length + " \u5DF2\u51C6\u5907 \xB7 " + runtimeSourcesState.selected.size + " \u5DF2\u9009\u62E9" : "\u672A\u53D1\u73B0 JAR");
+      var prepare = $("runtime-sources-prepare");
+      if (prepare) {
+        prepare.disabled = runtimeSourcesState.selected.size === 0;
+        prepare.innerHTML = icon("sparkles") + "\u51C6\u5907\u6240\u9009" + (runtimeSourcesState.selected.size ? " (" + runtimeSourcesState.selected.size + ")" : "");
+      }
+      list.innerHTML = "";
+      if (!mods.length) {
+        list.innerHTML = '<p class="muted-placeholder">run/mods \u4E2D\u6CA1\u6709\u53EF\u626B\u63CF\u7684 JAR\u3002</p>';
+        return;
+      }
+      mods.forEach(function(item) {
+        var badge = runtimeSourceBadge(item);
+        var row = document.createElement("div");
+        row.className = "runtime-source-row";
+        var checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = runtimeSourcesState.selected.has(item.file);
+        checkbox.disabled = !item.supported;
+        checkbox.setAttribute("aria-label", "\u9009\u62E9 " + (item.modName || item.relativePath));
+        checkbox.addEventListener("change", function() {
+          if (checkbox.checked) runtimeSourcesState.selected.add(item.file);
+          else runtimeSourcesState.selected.delete(item.file);
+          renderRuntimeSources();
+        });
+        var copy = document.createElement("div");
+        copy.className = "runtime-source-copy";
+        copy.innerHTML = '<div class="runtime-source-title"><strong>' + esc(item.modName || item.modId || "\u672A\u77E5 JAR") + "</strong>" + (item.modVersion ? "<span>" + esc(item.modVersion) + "</span>" : "") + '</div><div class="runtime-source-file">' + esc(item.relativePath) + (item.modId ? " \xB7 " + esc(item.modId) : "") + "</div>";
+        var meta = document.createElement("div");
+        meta.className = "runtime-source-meta";
+        meta.innerHTML = '<span class="runtime-source-badge ' + badge.className + '">' + esc(badge.label) + "</span>";
+        if (item.source?.ready && item.source.sourcePath) {
+          var open = document.createElement("button");
+          open.type = "button";
+          open.className = "btn btn-icon";
+          open.title = "\u6253\u5F00\u6E90\u7801";
+          open.setAttribute("aria-label", "\u6253\u5F00\u6E90\u7801");
+          open.innerHTML = icon("folder");
+          open.addEventListener("click", function() {
+            void api("/api/open-folder", { method: "POST", body: { path: item.source.sourcePath } });
+          });
+          meta.appendChild(open);
+        }
+        row.append(checkbox, copy, meta);
+        list.appendChild(row);
+      });
+    }
+    async function refreshRuntimeSources(keepSelection) {
+      var variant = runtimeSourcesState.variant;
+      if (!variant) return;
+      var list = $("runtime-sources-list");
+      if (list) list.innerHTML = '<p class="loading-placeholder">\u6B63\u5728\u626B\u63CF run/mods\u2026</p>';
+      var data = await api("/api/variants/" + encodeURIComponent(variant.id) + "/runtime-mods");
+      runtimeSourcesState.mods = data.mods || [];
+      var available = new Set(runtimeSourcesState.mods.filter(function(item) {
+        return item.supported;
+      }).map(function(item) {
+        return item.file;
+      }));
+      if (keepSelection) {
+        runtimeSourcesState.selected = new Set(Array.from(runtimeSourcesState.selected).filter(function(file) {
+          return available.has(file);
+        }));
+      } else {
+        runtimeSourcesState.selected = new Set(runtimeSourcesState.mods.filter(function(item) {
+          return item.supported && !item.source?.ready;
+        }).map(function(item) {
+          return item.file;
+        }));
+      }
+      setText("runtime-sources-path", data.rootPath || "run/mods");
+      renderRuntimeSources();
+    }
+    async function openRuntimeSources(variant) {
+      runtimeSourcesState.variant = variant;
+      runtimeSourcesState.mods = [];
+      runtimeSourcesState.selected.clear();
+      $("runtime-sources-modal")?.classList.add("visible");
+      try {
+        await refreshRuntimeSources(false);
+      } catch (err) {
+        closeRuntimeSourcesModal();
+        showError("\u8BFB\u53D6\u8FD0\u884C\u6A21\u7EC4\u5931\u8D25\uFF1A" + err.message);
+      }
+    }
+    async function prepareRuntimeSources() {
+      var variant = runtimeSourcesState.variant;
+      var files = Array.from(runtimeSourcesState.selected);
+      if (!variant || !files.length) return;
+      closeRuntimeSourcesModal();
       hideError();
-      showModal("\u51C6\u5907\u5F00\u53D1\u6E90\u7801", "\u6B63\u5728\u8BC6\u522B Minecraft\u3001\u6620\u5C04\u4E0E Gradle \u524D\u7F6E\u4F9D\u8D56\u2026");
+      showModal("\u51C6\u5907\u8054\u52A8\u6E90\u7801", "\u6B63\u5728\u5904\u7406\u6240\u9009 run/mods \u6A21\u7EC4\u2026");
+      var cancelButton = $("modal-source-cancel");
+      if (cancelButton) cancelButton.hidden = false;
+      try {
+        var started = await api("/api/variants/" + encodeURIComponent(variant.id) + "/runtime-mods/sources", {
+          method: "POST",
+          body: { files }
+        });
+        var taskId = started.task?.id;
+        if (!taskId) throw new Error("\u670D\u52A1\u7AEF\u672A\u8FD4\u56DE\u6E90\u7801\u4EFB\u52A1");
+        while (true) {
+          var status = await api("/api/sources/status");
+          var task = status.task;
+          if (!task || task.id !== taskId) throw new Error("\u6E90\u7801\u4EFB\u52A1\u72B6\u6001\u5DF2\u4E22\u5931");
+          setModalLogContent((task.currentPhase ? "\u9636\u6BB5: " + sourcePhaseLabel(task.currentPhase) + "\n" : "") + (task.logs || []).join("\n"), { scrollToEnd: true });
+          if (task.state !== "running") {
+            if (task.state === "completed") {
+              invalidateDetailCache();
+              await refreshDetail({ force: true });
+              closeModal();
+              await openRuntimeSources(variant);
+              notify("\u6240\u9009\u8FD0\u884C\u6A21\u7EC4\u6E90\u7801\u5DF2\u51C6\u5907", task.dependencyFailures ? "warning" : "success");
+            } else if (task.state === "cancelled") {
+              closeModal();
+              notify("\u8054\u52A8\u6E90\u7801\u51C6\u5907\u5DF2\u53D6\u6D88", "warning");
+            } else {
+              throw new Error(task.lastError || "\u8054\u52A8\u6E90\u7801\u51C6\u5907\u5931\u8D25");
+            }
+            break;
+          }
+          await new Promise(function(resolve) {
+            setTimeout(resolve, 900);
+          });
+        }
+      } catch (err) {
+        showError("\u8054\u52A8\u6E90\u7801\u51C6\u5907\u5931\u8D25\uFF1A" + err.message);
+        showModal("\u8054\u52A8\u6E90\u7801\u51C6\u5907\u5931\u8D25", err.message);
+      } finally {
+        if (cancelButton) cancelButton.hidden = true;
+      }
+    }
+    $("runtime-sources-cancel")?.addEventListener("click", closeRuntimeSourcesModal);
+    $("runtime-sources-refresh")?.addEventListener("click", function() {
+      void refreshRuntimeSources(true);
+    });
+    $("runtime-sources-select-all")?.addEventListener("click", function() {
+      runtimeSourcesState.selected = new Set(runtimeSourcesState.mods.filter(function(item) {
+        return item.supported && !item.source?.ready;
+      }).map(function(item) {
+        return item.file;
+      }));
+      renderRuntimeSources();
+    });
+    $("runtime-sources-prepare")?.addEventListener("click", function() {
+      void prepareRuntimeSources();
+    });
+    async function prepareVariantSources(modId, variant, force, includeDependencies = false) {
+      hideError();
+      showModal(
+        includeDependencies ? "\u540C\u6B65 Gradle \u4F9D\u8D56\u6E90\u7801" : "\u51C6\u5907\u9879\u76EE\u5F00\u53D1\u6E90\u7801",
+        includeDependencies ? "\u6B63\u5728\u89E3\u6790 Gradle \u4F9D\u8D56\uFF1B\u9879\u76EE\u6E90\u7801\u5165\u53E3\u4F1A\u5148\u521B\u5EFA\u3002" : "\u6B63\u5728\u6295\u5F71 Minecraft \u5F00\u53D1\u6E90\u7801\u2026"
+      );
       var cancelButton = $("modal-source-cancel");
       if (cancelButton) cancelButton.hidden = false;
       try {
         var started = await api("/api/variants/" + variant.id + "/sources", {
           method: "POST",
-          body: { force: force === true }
+          body: { force: force === true, includeDependencies: includeDependencies === true }
         });
         var taskId = started.task?.id;
         if (!taskId) throw new Error("\u670D\u52A1\u7AEF\u672A\u8FD4\u56DE\u6E90\u7801\u4EFB\u52A1");
@@ -1064,7 +1346,7 @@ ${content.slice(-MAX_LOG_MODAL_CHARS)}`;
           if (!task || task.id !== taskId) throw new Error("\u6E90\u7801\u4EFB\u52A1\u72B6\u6001\u5DF2\u4E22\u5931");
           var log = $("modal-log");
           if (log) {
-            var dependencyProgress = task.currentPhase === "dependencies" ? task.dependenciesFound ? " \xB7 \u524D\u7F6E\u6A21\u7EC4 " + (task.dependenciesPrepared || 0) + "/" + task.dependenciesFound : " \xB7 Gradle \u6B63\u5728\u89E3\u6790\u524D\u7F6E\u4F9D\u8D56" : "";
+            var dependencyProgress = includeDependencies && task.currentPhase === "dependencies" ? task.dependenciesFound ? " \xB7 \u524D\u7F6E\u6A21\u7EC4 " + (task.dependenciesPrepared || 0) + "/" + task.dependenciesFound : " \xB7 Gradle \u6B63\u5728\u89E3\u6790\u524D\u7F6E\u4F9D\u8D56" : "";
             var progress = "Minecraft " + task.completed + "/" + task.total + (task.currentPhase ? " \xB7 " + sourcePhaseLabel(task.currentPhase) : "") + dependencyProgress;
             setModalLogContent(progress + "\n" + (task.logs || []).join("\n"), { scrollToEnd: true });
           }
@@ -1073,11 +1355,24 @@ ${content.slice(-MAX_LOG_MODAL_CHARS)}`;
               await api("/api/open-folder", { method: "POST", body: { path: task.outputPath } });
               invalidateDetailCache(modId);
               await refreshDetail({ force: true });
+              var refreshed = state.detailCache[modId]?.mod?.variants?.find(function(v) {
+                return v.id === variant.id;
+              });
+              var reportMods = (refreshed?.sourceStatus?.mods || []).filter(function(m) {
+                return !!m.reportFilePath;
+              });
               showModal(
                 "\u5F00\u53D1\u6E90\u7801\u5DF2\u51C6\u5907",
-                "\u9879\u76EE\u6E90\u7801\u76EE\u5F55\uFF1A" + task.outputPath + "\nMinecraft \u6E90\u7801\u4E0E " + (task.dependenciesPrepared || 0) + " \u4E2A\u524D\u7F6E\u6A21\u7EC4\u6E90\u7801\u5DF2\u5C31\u7EEA\u3002"
+                "\u9879\u76EE\u6E90\u7801\u76EE\u5F55\uFF1A" + task.outputPath + (includeDependencies ? "\nMinecraft \u6E90\u7801\u4E0E " + (task.dependenciesPrepared || 0) + " \u4E2A\u4F9D\u8D56\u6A21\u7EC4\u6E90\u7801\u5DF2\u5C31\u7EEA\u3002" : "\nMinecraft \u6E90\u7801\u5DF2\u5C31\u7EEA\u3002")
               );
               notify("\u5F00\u53D1\u6E90\u7801\u5DF2\u51C6\u5907\u5E76\u6253\u5F00\u6587\u4EF6\u5939", task.dependencyFailures ? "warning" : "success");
+              if (reportMods.length) {
+                setModalLogContent(
+                  getLastLogModalText() + "\n\nDependency API reports:\n" + reportMods.map(function(m) {
+                    return "- " + (m.modName || m.modId) + " " + (m.modVersion || "") + " [" + (m.sourceKind || "unknown") + "]";
+                  }).join("\n")
+                );
+              }
             } else if (task.state === "cancelled") {
               notify("\u6E90\u7801\u51C6\u5907\u5DF2\u53D6\u6D88", "warning");
               closeModal();
@@ -1110,15 +1405,10 @@ ${content.slice(-MAX_LOG_MODAL_CHARS)}`;
         invalidateDetailCache(modId);
         await refreshDetail({ force: true });
         notify("\u5BA2\u6237\u7AEF\u6B63\u5728\u542F\u52A8\uFF0C\u8BF7\u7A0D\u5019\uFF08\u9996\u6B21\u9700\u4E0B\u8F7D\u4F9D\u8D56\uFF0C\u6E38\u620F\u7A97\u53E3\u6253\u5F00\u524D\u961F\u5217\u4F1A\u663E\u793A\u8FD0\u884C\u4E2D\uFF09");
-      } else if (action === "sources") {
-        if (variant.sourceStatus?.ready && variant.sourceStatus.rootPath) {
-          await api("/api/open-folder", { method: "POST", body: { path: variant.sourceStatus.rootPath } });
-          notify("\u5DF2\u6253\u5F00\u5F00\u53D1\u6E90\u7801\u6587\u4EF6\u5939");
-        } else {
-          await prepareVariantSources(modId, variant, false);
-        }
-      } else if (action === "sources-refresh") {
-        await prepareVariantSources(modId, variant, true);
+      } else if (action === "source-hub") {
+        await openSourceHub(modId, variant);
+      } else if (action === "sources-report") {
+        await openVariantSourceReports(variant);
       } else if (action === "folder") {
         await api("/api/open-folder", { method: "POST", body: { path: variant.projectPath } });
         notify("\u5DF2\u8BF7\u6C42\u6253\u5F00\u9879\u76EE\u6587\u4EF6\u5939");
@@ -2601,6 +2891,447 @@ ${content.slice(-MAX_LOG_MODAL_CHARS)}`;
       if (!value) return;
       await api("/api/open-folder", { method: "POST", body: { path: value } });
     }
+    var adaptState = {
+      searchRequestId: 0,
+      resolveRequestId: 0,
+      offset: 0,
+      limit: 20,
+      totalHits: 0,
+      results: [],
+      selectedProjectId: "",
+      category: "",
+      target: null,
+      variantId: "",
+      lastSourceResult: null
+    };
+    var ADAPT_DEFAULT_VERSIONS = [
+      "26.2",
+      "26.1.2",
+      "26.1.1",
+      "26.1",
+      "1.21.11",
+      "1.21.10",
+      "1.21.9",
+      "1.21.8",
+      "1.21.7",
+      "1.21.6",
+      "1.21.5",
+      "1.21.4",
+      "1.21.3",
+      "1.21.2",
+      "1.21.1",
+      "1.20.1"
+    ];
+    var ADAPT_CATEGORIES = [
+      ["adventure", "Adventure"],
+      ["cursed", "Cursed"],
+      ["decoration", "Decoration"],
+      ["economy", "Economy"],
+      ["equipment", "Equipment"],
+      ["food", "Food"],
+      ["game-mechanics", "Game Mechanics"],
+      ["library", "Library"],
+      ["magic", "Magic"],
+      ["management", "Management"],
+      ["minigame", "Minigame"],
+      ["mobs", "Mobs"],
+      ["optimization", "Optimization"],
+      ["social", "Social"],
+      ["storage", "Storage"],
+      ["technology", "Technology"],
+      ["transportation", "Transportation"],
+      ["utility", "Utility"],
+      ["worldgen", "World Generation"]
+    ];
+    var ADAPT_LOADERS = [
+      ["fabric", "Fabric"],
+      ["forge", "Forge"],
+      ["neoforge", "NeoForge"]
+    ];
+    function allWorkbenchVariants() {
+      var out = [];
+      (state.mods || []).forEach(function(mod) {
+        (mod.variants || []).forEach(function(variant) {
+          out.push({ mod, variant });
+        });
+      });
+      return out;
+    }
+    function selectedAdaptVariant() {
+      if (!adaptState.variantId) return null;
+      return allWorkbenchVariants().find(function(item) {
+        return item.variant.id === adaptState.variantId;
+      }) || null;
+    }
+    function renderAdaptVariantSelect() {
+      var select = $("adapt-variant-select");
+      if (!select) return;
+      var previous = adaptState.variantId || select.value;
+      select.innerHTML = '<option value="">\u672A\u7ED1\u5B9A\u53D8\u4F53</option>';
+      allWorkbenchVariants().forEach(function(item) {
+        var option = document.createElement("option");
+        option.value = item.variant.id;
+        option.textContent = item.mod.displayName + " \xB7 " + (LOADER_LABELS[item.variant.loader] || item.variant.loader) + " " + item.variant.mcVersion;
+        select.appendChild(option);
+      });
+      if (previous && Array.from(select.options).some(function(option) {
+        return option.value === previous;
+      })) {
+        select.value = previous;
+        adaptState.variantId = previous;
+      }
+    }
+    function applyAdaptVariantToFilters() {
+      var selected = selectedAdaptVariant();
+      if (!selected) return;
+      var loader = $("adapt-loader");
+      var mc = $("adapt-mc");
+      if (loader) loader.value = selected.variant.loader || "";
+      if (mc) mc.value = selected.variant.mcVersion || "";
+      syncAdaptFilterButtons();
+    }
+    function renderAdaptFilterList(containerId, values, activeValue, attrName) {
+      var wrap = $(containerId);
+      if (!wrap) return;
+      wrap.innerHTML = "";
+      values.forEach(function(item) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "adapt-filter-option" + (item[0] === activeValue ? " active" : "");
+        button.dataset[attrName] = item[0];
+        button.innerHTML = attrName === "adaptLoader" ? loaderIcon(item[0]) + "<span>" + esc(item[1]) + "</span>" : "<span>" + esc(item[1]) + "</span>";
+        wrap.appendChild(button);
+      });
+    }
+    function visibleAdaptVersions() {
+      var showAll = $("adapt-show-all-versions")?.checked === true;
+      var typed = ($("adapt-mc")?.value || "").trim();
+      var versions = showAll ? ADAPT_DEFAULT_VERSIONS : ADAPT_DEFAULT_VERSIONS.slice(0, 8);
+      if (typed && !versions.includes(typed)) versions = [typed].concat(versions);
+      return versions.map(function(version) {
+        return [version, version];
+      });
+    }
+    function renderAdaptFilters() {
+      renderAdaptFilterList("adapt-version-list", visibleAdaptVersions(), ($("adapt-mc")?.value || "").trim(), "adaptMc");
+      renderAdaptFilterList("adapt-loader-list", ADAPT_LOADERS, $("adapt-loader")?.value || "", "adaptLoader");
+      renderAdaptFilterList("adapt-category-list", ADAPT_CATEGORIES, adaptState.category, "adaptCategory");
+    }
+    function syncAdaptFilterButtons() {
+      document.querySelectorAll("[data-adapt-mc]").forEach(function(button) {
+        button.classList.toggle("active", button.dataset.adaptMc === ($("adapt-mc")?.value || "").trim());
+      });
+      document.querySelectorAll("[data-adapt-loader]").forEach(function(button) {
+        button.classList.toggle("active", button.dataset.adaptLoader === ($("adapt-loader")?.value || ""));
+      });
+      document.querySelectorAll("[data-adapt-category]").forEach(function(button) {
+        button.classList.toggle("active", button.dataset.adaptCategory === adaptState.category);
+      });
+    }
+    function openAdaptCenterForVariant(variant) {
+      adaptState.variantId = variant.id;
+      renderAdaptVariantSelect();
+      applyAdaptVariantToFilters();
+      setAdaptDetailMode(false);
+      showView("adapt");
+      void loadAdaptView();
+    }
+    function setAdaptDetailMode(enabled) {
+      $("view-adapt")?.classList.toggle("adapt-detail-mode", enabled);
+    }
+    function backToAdaptResults() {
+      adaptState.resolveRequestId++;
+      setAdaptDetailMode(false);
+      adaptState.target = null;
+      adaptState.lastSourceResult = null;
+      var detail = $("adapt-detail");
+      if (detail) {
+        detail.classList.remove("visible");
+        detail.innerHTML = "";
+      }
+      requestAnimationFrame(function() {
+        $("view-adapt")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+    async function loadAdaptView() {
+      if (!state.modsFetchedAt) {
+        await loadMods();
+      }
+      setAdaptDetailMode(false);
+      renderAdaptVariantSelect();
+      applyAdaptVariantToFilters();
+      renderAdaptFilters();
+      if (!$("adapt-detail")?.classList.contains("visible")) {
+        var detail = $("adapt-detail");
+        if (detail) {
+          detail.classList.add("visible");
+          detail.innerHTML = '<p class="muted-placeholder">\u9009\u62E9\u4E00\u4E2A\u641C\u7D22\u7ED3\u679C\u67E5\u770B\u7248\u672C\u3001\u4F9D\u8D56\u548C\u6E90\u7801\u5019\u9009\u3002</p>';
+        }
+      }
+      if (!adaptState.results.length) {
+        void searchAdaptMods(true);
+      }
+    }
+    function adaptSearchParams(resetOffset) {
+      if (resetOffset) adaptState.offset = 0;
+      var query = ($("adapt-query")?.value || "").trim();
+      var source = $("adapt-source")?.value || "all";
+      var loader = $("adapt-loader")?.value || "";
+      var mc = ($("adapt-mc")?.value || "").trim();
+      var sort = $("adapt-sort")?.value || "downloads";
+      var limit = Number($("adapt-limit")?.value || adaptState.limit);
+      adaptState.limit = Number.isFinite(limit) && limit > 0 ? limit : 20;
+      var params = new URLSearchParams();
+      params.set("query", query);
+      params.set("source", source);
+      params.set("sort", sort);
+      params.set("offset", String(adaptState.offset));
+      params.set("limit", String(adaptState.limit));
+      if (loader) params.set("loader", loader);
+      if (mc) params.set("mcVersion", mc);
+      if (adaptState.category) params.set("category", adaptState.category);
+      return params;
+    }
+    async function searchAdaptMods(resetOffset) {
+      var requestId = ++adaptState.searchRequestId;
+      hideError();
+      var results = $("adapt-results");
+      if (results) results.innerHTML = '<p class="loading-placeholder">\u641C\u7D22\u4E2D...</p>';
+      setText("adapt-count", "\u641C\u7D22\u4E2D");
+      try {
+        var data = await api("/api/mod-intel/search?" + adaptSearchParams(resetOffset).toString());
+        if (requestId !== adaptState.searchRequestId) return;
+        adaptState.results = data.results || [];
+        adaptState.totalHits = data.totalHits || 0;
+        renderAdaptResults(data);
+      } catch (e) {
+        if (requestId !== adaptState.searchRequestId) return;
+        if (results) results.innerHTML = '<p class="muted-placeholder">\u641C\u7D22\u5931\u8D25</p>';
+        showError("\u6A21\u7EC4\u641C\u7D22\u5931\u8D25\uFF1A" + e.message);
+      }
+    }
+    function renderAdaptResults(data) {
+      var warning = $("adapt-warning");
+      var warnings = data.warnings || [];
+      if (warning) {
+        warning.hidden = warnings.length === 0;
+        warning.textContent = warnings.join(" ");
+      }
+      var total = data.totalHits || adaptState.totalHits || 0;
+      var start = total ? adaptState.offset + 1 : 0;
+      var end = Math.min(adaptState.offset + adaptState.limit, total);
+      setText("adapt-count", total + " \u4E2A\u7ED3\u679C \xB7 " + start + "-" + end);
+      setText("adapt-page-label", total ? "\u7B2C " + (Math.floor(adaptState.offset / adaptState.limit) + 1) + " \u9875" : "\u7B2C 0 \u9875");
+      var prev = $("adapt-prev");
+      var next = $("adapt-next");
+      if (prev) prev.disabled = adaptState.offset <= 0;
+      if (next) next.disabled = adaptState.offset + adaptState.limit >= total;
+      var results = $("adapt-results");
+      if (!results) return;
+      results.innerHTML = "";
+      if (!adaptState.results.length) {
+        results.innerHTML = '<p class="muted-placeholder">\u6CA1\u6709\u5339\u914D\u7ED3\u679C</p>';
+        return;
+      }
+      adaptState.results.forEach(function(item, index) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "adapt-result" + (adaptState.selectedProjectId === item.projectId ? " selected" : "");
+        button.dataset.index = String(index);
+        var iconHtml = item.iconUrl ? '<img src="' + esc(item.iconUrl) + '" alt="">' : esc((item.title || "MOD").slice(0, 2).toUpperCase());
+        var loaders = (item.loaders || []).map(function(loader) {
+          return LOADER_LABELS[loader] || loader;
+        }).join("/");
+        var versions = (item.versions || []).slice(0, 4).join(" ");
+        var tags = [
+          loaders || "Any loader",
+          versions || "Any MC",
+          item.license || "unknown license",
+          item.openSource ? "source" : "no source link"
+        ].filter(Boolean);
+        button.innerHTML = '<span class="adapt-icon">' + iconHtml + '</span><span class="adapt-result-main"><span class="adapt-result-title"><strong>' + esc(item.title || item.slug || item.projectId) + '</strong><span class="adapt-provider">' + esc(item.provider) + '</span></span><span class="adapt-result-desc">' + esc(item.description || "") + '</span><span class="adapt-tags">' + tags.map(function(tag) {
+          return "<span>" + esc(tag) + "</span>";
+        }).join("") + '</span></span><span class="adapt-result-stat">' + (item.downloads ? Number(item.downloads).toLocaleString() + " dl" : "") + "</span>";
+        button.addEventListener("click", function() {
+          void selectAdaptResult(item).catch(function(err) {
+            showError("\u89E3\u6790\u6A21\u7EC4\u5931\u8D25\uFF1A" + err.message);
+          });
+        });
+        results.appendChild(button);
+      });
+    }
+    async function selectAdaptResult(item) {
+      var requestId = ++adaptState.resolveRequestId;
+      adaptState.selectedProjectId = item.projectId;
+      adaptState.lastSourceResult = null;
+      renderAdaptResults({ totalHits: adaptState.totalHits, warnings: [], results: adaptState.results });
+      var detail = $("adapt-detail");
+      if (detail) {
+        setAdaptDetailMode(true);
+        detail.classList.add("visible");
+        detail.innerHTML = '<p class="loading-placeholder">\u6B63\u5728\u89E3\u6790\u7248\u672C\u4E0E\u6E90\u7801\u5019\u9009...</p>';
+        requestAnimationFrame(function() {
+          detail.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      }
+      var loader = $("adapt-loader")?.value || void 0;
+      var mc = ($("adapt-mc")?.value || "").trim() || void 0;
+      try {
+        var resolved = await api("/api/mod-intel/resolve", {
+          method: "POST",
+          body: {
+            kind: "modrinth",
+            projectIdOrSlug: item.slug || item.projectId,
+            loader: loader || void 0,
+            mcVersion: mc
+          }
+        });
+        if (requestId !== adaptState.resolveRequestId) return;
+        adaptState.target = resolved.target;
+        renderAdaptDetail(resolved.target);
+      } catch (err) {
+        if (requestId === adaptState.resolveRequestId) throw err;
+      }
+    }
+    function renderAdaptDetail(target) {
+      var detail = $("adapt-detail");
+      if (!detail) return;
+      detail.classList.add("visible");
+      var version = target.selectedVersion || {};
+      var deps = version.dependencies || [];
+      var files = version.files || [];
+      var sourceRows = (target.sourceCandidates || []).map(function(candidate, index) {
+        var checked = index === 0 ? " checked" : "";
+        return '<label class="adapt-source-row"><input type="radio" name="adapt-source-choice" value="' + esc(candidate.sourceKind) + '"' + checked + "><span><strong>" + esc(candidate.sourceKind) + "</strong><br><span>" + esc(candidate.reason || candidate.provider) + "</span></span><span>" + esc(candidate.confidence || "unknown") + "</span></label>";
+      }).join("");
+      var dependencyList = deps.length ? deps.map(function(dep) {
+        return "<span>" + esc(dep.dependencyType || "dependency") + (dep.projectId ? " \xB7 " + dep.projectId : "") + "</span>";
+      }).join("") : "<span>\u65E0\u4F9D\u8D56\u8BB0\u5F55</span>";
+      var fileList = files.length ? files.map(function(file) {
+        return "<span>" + esc(file.fileName) + "</span>";
+      }).join("") : "<span>\u65E0\u6587\u4EF6\u8BB0\u5F55</span>";
+      var snippet = (target.dependencySnippets || [])[0] || "No dependency snippet is available for this provider.";
+      var result = adaptState.lastSourceResult;
+      detail.innerHTML = '<button class="back-link" id="adapt-detail-back" type="button">' + icon("chevron-left") + '\u8FD4\u56DE\u641C\u7D22\u7ED3\u679C</button><div class="adapt-detail-head"><div><h3>' + esc(target.modName || target.title) + "</h3><p>" + esc(target.projectUrl || target.sourceUrl || target.provider) + '</p><div class="adapt-detail-meta"><span>modId: ' + esc(target.modId || "-") + "</span><span>version: " + esc(target.modVersion || "-") + "</span><span>loader: " + esc(target.loader || ($("adapt-loader")?.value || "-")) + "</span><span>MC: " + esc(target.minecraftVersion || ($("adapt-mc")?.value || "-")) + "</span><span>license: " + esc(target.license || "unknown") + '</span></div></div><div class="adapt-detail-actions"><button class="btn btn-primary btn-sm" id="btn-adapt-prepare" type="button">' + icon("sparkles") + '\u51C6\u5907\u6E90\u7801</button><button class="btn btn-secondary btn-sm" id="btn-adapt-save" type="button">\u4FDD\u5B58\u9002\u914D\u6863\u6848</button><button class="btn btn-secondary btn-sm" id="btn-adapt-open-source" type="button"' + (result ? "" : " disabled") + '>\u6253\u5F00\u6E90\u7801</button><button class="btn btn-secondary btn-sm" id="btn-adapt-open-report" type="button"' + (result ? "" : " disabled") + '>\u6253\u5F00\u62A5\u544A</button></div></div><div class="adapt-detail-grid"><div class="adapt-detail-block"><h4>\u6E90\u7801\u5019\u9009</h4><div class="adapt-source-list">' + sourceRows + '</div></div><div class="adapt-detail-block"><h4>\u4F9D\u8D56\u7247\u6BB5</h4><pre class="adapt-snippet" id="adapt-snippet">' + esc(snippet) + '</pre><div class="adapt-detail-actions"><button class="btn btn-secondary btn-sm" id="btn-adapt-copy-snippet" type="button">' + icon("copy") + '\u590D\u5236\u7247\u6BB5</button></div></div><div class="adapt-detail-block"><h4>\u7248\u672C\u6587\u4EF6</h4><div class="adapt-tags">' + fileList + '</div></div><div class="adapt-detail-block"><h4>\u4F9D\u8D56\u5173\u7CFB</h4><div class="adapt-tags">' + dependencyList + "</div></div></div>";
+      $("adapt-detail-back")?.addEventListener("click", backToAdaptResults);
+      $("btn-adapt-prepare")?.addEventListener("click", function() {
+        void prepareAdaptSources();
+      });
+      $("btn-adapt-save")?.addEventListener("click", function() {
+        void saveAdaptProfile();
+      });
+      $("btn-adapt-open-source")?.addEventListener("click", function() {
+        void openAdaptSource();
+      });
+      $("btn-adapt-open-report")?.addEventListener("click", function() {
+        void openAdaptReport();
+      });
+      $("btn-adapt-copy-snippet")?.addEventListener("click", function() {
+        void copyAdaptSnippet();
+      });
+    }
+    function selectedAdaptSourceKind() {
+      return document.querySelector('input[name="adapt-source-choice"]:checked')?.value || void 0;
+    }
+    async function prepareAdaptSources() {
+      if (!adaptState.target) return;
+      hideError();
+      var selected = selectedAdaptVariant();
+      var loader = $("adapt-loader")?.value || adaptState.target.loader || selected?.variant.loader || "";
+      var mc = ($("adapt-mc")?.value || adaptState.target.minecraftVersion || selected?.variant.mcVersion || "").trim();
+      if (!loader || !mc) {
+        showError("\u8BF7\u5148\u9009\u62E9\u52A0\u8F7D\u5668\u548C Minecraft \u7248\u672C");
+        return;
+      }
+      showModal("\u51C6\u5907\u5916\u90E8\u6A21\u7EC4\u6E90\u7801", "\u6B63\u5728\u4E0B\u8F7D\u6587\u4EF6\u5E76\u51C6\u5907\u6E90\u7801...");
+      try {
+        var started = await api("/api/mod-intel/sources", {
+          method: "POST",
+          body: {
+            target: adaptState.target,
+            loader,
+            mcVersion: mc,
+            projectPath: selected?.variant.projectPath,
+            preferredSourceKind: selectedAdaptSourceKind()
+          }
+        });
+        var taskId = started.task?.id;
+        if (!taskId) throw new Error("\u670D\u52A1\u7AEF\u672A\u8FD4\u56DE\u6E90\u7801\u4EFB\u52A1");
+        while (true) {
+          var status = await api("/api/mod-intel/status");
+          var task = status.task;
+          if (!task || task.id !== taskId) throw new Error("\u6E90\u7801\u4EFB\u52A1\u72B6\u6001\u5DF2\u4E22\u5931");
+          setModalLogContent(
+            (task.phase ? "\u9636\u6BB5: " + task.phase + "\n" : "") + (task.logs || []).join("\n"),
+            { scrollToEnd: true }
+          );
+          if (task.state !== "running") {
+            if (task.state === "completed") {
+              adaptState.lastSourceResult = task.result;
+              var openSourcePath2 = task.result.projectModSourcePath || task.result.sourcePath;
+              await api("/api/open-folder", { method: "POST", body: { path: openSourcePath2 } });
+              if (selected) await saveAdaptProfile(task.result.unitId, false);
+              renderAdaptDetail(adaptState.target);
+              showModal("\u5916\u90E8\u6A21\u7EC4\u6E90\u7801\u5DF2\u51C6\u5907", "\u6E90\u7801\u76EE\u5F55:\n" + openSourcePath2 + (task.result.projectSourcePath ? "\n\n\u9879\u76EE\u6E90\u7801\u5165\u53E3:\n" + task.result.projectSourcePath : "") + "\n\n\u62A5\u544A:\n" + (task.result.reportPath || "\u65E0"));
+              notify("\u5916\u90E8\u6A21\u7EC4\u6E90\u7801\u5DF2\u51C6\u5907", "success");
+            } else {
+              var taskLog = (task.logs || []).join("\n");
+              throw new Error((task.lastError || "\u6E90\u7801\u51C6\u5907\u5931\u8D25") + (taskLog ? "\n\n" + taskLog : ""));
+            }
+            break;
+          }
+          await new Promise(function(resolve) {
+            setTimeout(resolve, 900);
+          });
+        }
+      } catch (e) {
+        showError("\u5916\u90E8\u6A21\u7EC4\u6E90\u7801\u51C6\u5907\u5931\u8D25\uFF1A" + e.message);
+        showModal("\u5916\u90E8\u6A21\u7EC4\u6E90\u7801\u51C6\u5907\u5931\u8D25", e.message);
+      }
+    }
+    async function saveAdaptProfile(sourceUnitId, notifyUser = true) {
+      if (!adaptState.target) return;
+      var selected = selectedAdaptVariant();
+      if (!selected) {
+        if (notifyUser) notify("\u8BF7\u5148\u7ED1\u5B9A\u4E00\u4E2A\u53D8\u4F53", "warning");
+        return;
+      }
+      var profile = await api("/api/variants/" + encodeURIComponent(selected.variant.id) + "/compat", {
+        method: "POST",
+        body: {
+          target: {
+            ...adaptState.target,
+            loader: $("adapt-loader")?.value || adaptState.target.loader || selected.variant.loader,
+            minecraftVersion: $("adapt-mc")?.value || adaptState.target.minecraftVersion || selected.variant.mcVersion
+          },
+          sourceUnitId: sourceUnitId || adaptState.lastSourceResult?.unitId,
+          dependencySnippets: adaptState.target.dependencySnippets || []
+        }
+      });
+      if (notifyUser) notify("\u9002\u914D\u6863\u6848\u5DF2\u4FDD\u5B58", "success");
+      return profile;
+    }
+    async function openAdaptSource() {
+      var result = adaptState.lastSourceResult;
+      if (!result) return;
+      if (result.projectModSourcePath) {
+        await api("/api/open-folder", { method: "POST", body: { path: result.projectModSourcePath } });
+        return;
+      }
+      await api("/api/mod-intel/sources/" + encodeURIComponent(result.unitId) + "/open", { method: "POST" });
+    }
+    async function openAdaptReport() {
+      var unitId = adaptState.lastSourceResult?.unitId;
+      if (!unitId) return;
+      var report = await api("/api/mod-intel/sources/" + encodeURIComponent(unitId) + "/report");
+      showLogModal("\u5916\u90E8\u6A21\u7EC4 API \u62A5\u544A", report.content || "", { copyLabel: "\u590D\u5236\u62A5\u544A" });
+    }
+    async function copyAdaptSnippet() {
+      var snippet = $("adapt-snippet")?.textContent || "";
+      if (!snippet.trim()) return;
+      await navigator.clipboard.writeText(snippet);
+      notify("\u4F9D\u8D56\u7247\u6BB5\u5DF2\u590D\u5236", "success");
+    }
     async function refreshAllMetaFromSettings() {
       var btn = $("btn-settings-refresh-versions");
       if (btn) btn.disabled = true;
@@ -2908,6 +3639,7 @@ ${content.slice(-MAX_LOG_MODAL_CHARS)}`;
         } else {
           showView(view);
           if (view === "settings") loadSettings();
+          if (view === "adapt") loadAdaptView();
           if (view === "external") loadExternalView();
           if (view === "list") loadMods(true);
         }
@@ -2920,6 +3652,82 @@ ${content.slice(-MAX_LOG_MODAL_CHARS)}`;
     });
     $("btn-new-mod").addEventListener("click", function() {
       document.querySelector('.nav-btn[data-view="create"]').click();
+    });
+    $("btn-adapt-search")?.addEventListener("click", function() {
+      void searchAdaptMods(true);
+    });
+    $("adapt-query")?.addEventListener("keydown", function(event) {
+      if (event.key === "Enter") void searchAdaptMods(true);
+    });
+    $("adapt-mc")?.addEventListener("keydown", function(event) {
+      if (event.key === "Enter") {
+        renderAdaptFilters();
+        void searchAdaptMods(true);
+      }
+    });
+    $("adapt-mc")?.addEventListener("input", function() {
+      renderAdaptFilters();
+    });
+    $("adapt-show-all-versions")?.addEventListener("change", function() {
+      renderAdaptFilters();
+    });
+    $("adapt-source")?.addEventListener("change", function() {
+      void searchAdaptMods(true);
+    });
+    $("adapt-sort")?.addEventListener("change", function() {
+      void searchAdaptMods(true);
+    });
+    $("adapt-limit")?.addEventListener("change", function() {
+      void searchAdaptMods(true);
+    });
+    $("view-adapt")?.addEventListener("click", function(event) {
+      var target = event.target;
+      var button = target.closest("[data-adapt-mc], [data-adapt-loader], [data-adapt-category], [data-adapt-clear]");
+      if (!button) return;
+      if (button.dataset.adaptMc !== void 0) {
+        var mc = $("adapt-mc");
+        if (mc) mc.value = button.dataset.adaptMc || "";
+      } else if (button.dataset.adaptLoader !== void 0) {
+        var loader = $("adapt-loader");
+        if (loader) loader.value = button.dataset.adaptLoader || "";
+      } else if (button.dataset.adaptCategory !== void 0) {
+        adaptState.category = button.dataset.adaptCategory || "";
+        var category = $("adapt-category");
+        if (category) category.value = adaptState.category;
+      } else if (button.dataset.adaptClear === "mc") {
+        var mcInput = $("adapt-mc");
+        if (mcInput) mcInput.value = "";
+      } else if (button.dataset.adaptClear === "loader") {
+        var loaderInput = $("adapt-loader");
+        if (loaderInput) loaderInput.value = "";
+      } else if (button.dataset.adaptClear === "category") {
+        adaptState.category = "";
+        var categoryInput = $("adapt-category");
+        if (categoryInput) categoryInput.value = "";
+      }
+      renderAdaptFilters();
+      void searchAdaptMods(true);
+    });
+    $("btn-adapt-refresh")?.addEventListener("click", function() {
+      void loadMods(true).then(function() {
+        renderAdaptVariantSelect();
+        if (adaptState.results.length) void searchAdaptMods(false);
+      });
+    });
+    $("adapt-prev")?.addEventListener("click", function() {
+      adaptState.offset = Math.max(0, adaptState.offset - adaptState.limit);
+      void searchAdaptMods(false);
+    });
+    $("adapt-next")?.addEventListener("click", function() {
+      if (adaptState.offset + adaptState.limit >= adaptState.totalHits) return;
+      adaptState.offset += adaptState.limit;
+      void searchAdaptMods(false);
+    });
+    $("adapt-variant-select")?.addEventListener("change", function() {
+      adaptState.variantId = $("adapt-variant-select")?.value || "";
+      applyAdaptVariantToFilters();
+      renderAdaptFilters();
+      void searchAdaptMods(true);
     });
     $("btn-scan").addEventListener("click", async function() {
       try {

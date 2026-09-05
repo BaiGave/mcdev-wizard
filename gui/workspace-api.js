@@ -43,6 +43,7 @@ exports.ws = ws;
 const node_child_process_1 = require("node:child_process");
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
+const electron_1 = require("electron");
 const build_queue_1 = require("./build-queue");
 const variant_batch_job_1 = require("./variant-batch-job");
 const mod_gen_lock_1 = require("./mod-gen-lock");
@@ -118,6 +119,7 @@ function pickBuildableVariants(variants, opts) {
 }
 let wsMod = null;
 let minecraftSourcesMod = null;
+let modIntelMod = null;
 async function ws() {
     if (!wsMod) {
         const projectRoot = node_path_1.default.resolve(__dirname, "..");
@@ -130,6 +132,12 @@ async function minecraftSources() {
         minecraftSourcesMod = await (0, dist_loader_1.loadDist)((0, dist_loader_1.repoDist)("sources", "index.js"));
     }
     return minecraftSourcesMod;
+}
+async function modIntel() {
+    if (!modIntelMod) {
+        modIntelMod = await (0, dist_loader_1.loadDist)((0, dist_loader_1.repoDist)("mod-intel", "index.js"));
+    }
+    return modIntelMod;
 }
 async function cancelSourceJobs() {
     try {
@@ -758,6 +766,84 @@ async function handleWorkspaceApi(req, res, urlPath, method) {
         json(res, { ok: true, task: sources.cancelMinecraftSourceTask() });
         return true;
     }
+    // GET /api/mod-intel/search
+    if (urlPath === "/api/mod-intel/search" && method === "GET") {
+        const q = new URL(req.url ?? urlPath, "http://localhost").searchParams;
+        const source = q.get("source") ?? "all";
+        const loader = parseLoaderParam(q.get("loader"));
+        const limit = parseLimitParam(q.get("limit"));
+        const offset = parseLimitParam(q.get("offset"));
+        if (q.get("loader") && !loader) {
+            json(res, { error: "未知加载器" }, 400);
+            return true;
+        }
+        try {
+            const payload = await (await modIntel()).searchExternalMods({
+                query: q.get("query") ?? "",
+                source,
+                loader,
+                mcVersion: q.get("mcVersion") ?? q.get("mc") ?? undefined,
+                category: q.get("category") ?? undefined,
+                sort: q.get("sort") ?? "relevance",
+                offset,
+                limit,
+            });
+            json(res, payload);
+        }
+        catch (err) {
+            json(res, { error: err.message }, 500);
+        }
+        return true;
+    }
+    // POST /api/mod-intel/resolve
+    if (urlPath === "/api/mod-intel/resolve" && method === "POST") {
+        const body = await readBody(req);
+        try {
+            json(res, { target: await (await modIntel()).resolveExternalMod(body) });
+        }
+        catch (err) {
+            json(res, { error: err.message }, 400);
+        }
+        return true;
+    }
+    // GET /api/mod-intel/status
+    if (urlPath === "/api/mod-intel/status" && method === "GET") {
+        json(res, (await modIntel()).getModIntelStatus());
+        return true;
+    }
+    // POST /api/mod-intel/sources
+    if (urlPath === "/api/mod-intel/sources" && method === "POST") {
+        const body = await readBody(req);
+        try {
+            json(res, { ok: true, task: (await modIntel()).startModIntelSourceTask(body) }, 202);
+        }
+        catch (err) {
+            json(res, { error: err.message }, 409);
+        }
+        return true;
+    }
+    const modIntelReportMatch = urlPath.match(/^\/api\/mod-intel\/sources\/([^/]+)\/report$/);
+    if (modIntelReportMatch && method === "GET") {
+        try {
+            json(res, (await modIntel()).readSourceReport(decodeURIComponent(modIntelReportMatch[1])));
+        }
+        catch (err) {
+            json(res, { error: err.message }, 404);
+        }
+        return true;
+    }
+    const modIntelOpenMatch = urlPath.match(/^\/api\/mod-intel\/sources\/([^/]+)\/open$/);
+    if (modIntelOpenMatch && method === "POST") {
+        try {
+            const paths = (await modIntel()).sourceUnitPaths(decodeURIComponent(modIntelOpenMatch[1]));
+            await electron_1.shell.openPath(paths.sourceDir);
+            json(res, { ok: true, path: paths.sourceDir });
+        }
+        catch (err) {
+            json(res, { error: err.message }, 404);
+        }
+        return true;
+    }
     // POST /api/settings/concurrency
     if (urlPath === "/api/settings/concurrency" && method === "POST") {
         const body = (await readBody(req));
@@ -804,6 +890,39 @@ async function handleWorkspaceApi(req, res, urlPath, method) {
         json(res, { ok, scanDirs: store.getScanDirs() });
         return true;
     }
+    // GET/POST/PATCH /api/variants/:id/compat
+    const compatMatch = urlPath.match(/^\/api\/variants\/([^/]+)\/compat$/);
+    if (compatMatch && method === "GET") {
+        const found = store.getVariant(decodeURIComponent(compatMatch[1]));
+        if (!found) {
+            json(res, { error: "变体不存在" }, 404);
+            return true;
+        }
+        json(res, {
+            profiles: (await modIntel()).listCompatibilityProfiles(found.variant.projectPath, found.variant.id),
+        });
+        return true;
+    }
+    if (compatMatch && (method === "POST" || method === "PATCH")) {
+        const found = store.getVariant(decodeURIComponent(compatMatch[1]));
+        if (!found) {
+            json(res, { error: "变体不存在" }, 404);
+            return true;
+        }
+        const body = await readBody(req);
+        if (!body?.target) {
+            json(res, { error: "缺少 target" }, 400);
+            return true;
+        }
+        try {
+            const profile = await (await modIntel()).upsertCompatibilityProfile(found.variant.projectPath, found.variant.id, body);
+            json(res, { ok: true, profile });
+        }
+        catch (err) {
+            json(res, { error: err.message }, 400);
+        }
+        return true;
+    }
     // POST /api/variants/:id/build
     const buildMatch = urlPath.match(/^\/api\/variants\/([^/]+)\/build$/);
     if (buildMatch && method === "POST") {
@@ -825,9 +944,71 @@ async function handleWorkspaceApi(req, res, urlPath, method) {
         return true;
     }
     // POST /api/variants/:id/sources — 按当前变体自动准备 MC 与前置模组源码
+    const runtimeModsMatch = urlPath.match(/^\/api\/variants\/([^/]+)\/runtime-mods$/);
+    if (runtimeModsMatch && method === "GET") {
+        const found = store.getVariant(decodeURIComponent(runtimeModsMatch[1]));
+        if (!found) {
+            json(res, { error: "变体不存在" }, 404);
+            return true;
+        }
+        if (!node_fs_1.default.existsSync(found.variant.projectPath)) {
+            json(res, { error: "项目目录不存在，请先重新定位项目" }, 400);
+            return true;
+        }
+        const sources = await minecraftSources();
+        const mods = await sources.listProjectRuntimeMods(found.variant.projectPath, found.variant.loader, found.variant.mcVersion);
+        json(res, {
+            rootPath: node_path_1.default.join(found.variant.projectPath, "run", "mods"),
+            mods,
+        });
+        return true;
+    }
+    const runtimeModsSourcesMatch = urlPath.match(/^\/api\/variants\/([^/]+)\/runtime-mods\/sources$/);
+    if (runtimeModsSourcesMatch && method === "POST") {
+        const found = store.getVariant(decodeURIComponent(runtimeModsSourcesMatch[1]));
+        if (!found) {
+            json(res, { error: "变体不存在" }, 404);
+            return true;
+        }
+        if (!node_fs_1.default.existsSync(found.variant.projectPath)) {
+            json(res, { error: "项目目录不存在，请先重新定位项目" }, 400);
+            return true;
+        }
+        const body = (await readBody(req));
+        const sources = await minecraftSources();
+        const available = await sources.listProjectRuntimeMods(found.variant.projectPath, found.variant.loader, found.variant.mcVersion);
+        const allowed = new Set(available.filter((item) => item.supported).map((item) => node_path_1.default.resolve(item.file)));
+        const selected = (body.files ?? [])
+            .filter((file) => typeof file === "string")
+            .map((file) => node_path_1.default.resolve(file))
+            .filter((file) => allowed.has(file));
+        if (!selected.length) {
+            json(res, { error: "请选择至少一个可识别的运行模组" }, 400);
+            return true;
+        }
+        try {
+            const task = sources.startMinecraftSourceTask({
+                scope: "single",
+                loader: found.variant.loader,
+                mcVersion: found.variant.mcVersion,
+                mapping: found.variant.mappings,
+                projectPath: found.variant.projectPath,
+                projectModId: found.mod.modId,
+                includeDependencies: true,
+                includeGradleDependencies: false,
+                runtimeModPaths: selected,
+                mirror: true,
+            });
+            json(res, { ok: true, task }, 202);
+        }
+        catch (err) {
+            json(res, { error: err.message }, 409);
+        }
+        return true;
+    }
     const sourceMatch = urlPath.match(/^\/api\/variants\/([^/]+)\/sources$/);
     if (sourceMatch && method === "POST") {
-        const found = store.getVariant(sourceMatch[1]);
+        const found = store.getVariant(decodeURIComponent(sourceMatch[1]));
         if (!found) {
             json(res, { error: "变体不存在" }, 404);
             return true;
@@ -846,7 +1027,9 @@ async function handleWorkspaceApi(req, res, urlPath, method) {
                 mapping: found.variant.mappings,
                 projectPath: found.variant.projectPath,
                 projectModId: found.mod.modId,
-                includeDependencies: true,
+                includeDependencies: body.includeDependencies === true,
+                includeGradleDependencies: body.includeDependencies === true,
+                includeRuntimeMods: false,
                 force: body.force === true,
                 mirror: true,
             });

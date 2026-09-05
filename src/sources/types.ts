@@ -14,6 +14,12 @@ export interface SourceTaskRequest {
   projectPath?: string;
   projectModId?: string;
   includeDependencies?: boolean;
+  /** Restrict dependency-source preparation to these runtime jars. */
+  runtimeModPaths?: string[];
+  /** Skip Gradle dependency resolution when preparing selected runtime jars. */
+  includeGradleDependencies?: boolean;
+  /** Include jars from local runtime mod folders in dependency preparation. */
+  includeRuntimeMods?: boolean;
 }
 
 export interface SourceTarget {
@@ -28,6 +34,40 @@ export interface SourceArtifactRecord {
   path: string;
   sha256: string;
   size: number;
+}
+
+export type SourceConfidence = "exact" | "high" | "medium" | "low";
+
+export interface ModSourceOrigin {
+  provider: "gradle" | "local" | "modrinth" | "curseforge" | "github" | "manual";
+  group?: string;
+  name?: string;
+  version?: string;
+  file?: string;
+  url?: string;
+  projectId?: string;
+  projectSlug?: string;
+  versionId?: string;
+  repositoryUrl?: string;
+  repositoryRef?: string;
+  commitSha?: string;
+}
+
+export interface ModSourceArtifact {
+  path: string;
+  sha256: string;
+  size: number;
+  maven?: {
+    group: string;
+    name: string;
+    version: string;
+  };
+}
+
+export interface SourceLicenseInfo {
+  id?: string;
+  name?: string;
+  source: "jar" | "platform" | "repository" | "unknown";
 }
 
 export interface MinecraftSourceManifest {
@@ -65,26 +105,68 @@ export interface ModSourceEntry {
   modName: string;
   modVersion: string;
   artifactSha256: string;
-  sourceKind: "sources-jar" | "cfr-decompile";
+  sourceKind: "sources-jar" | "github-source" | "manual-source" | "cfr-decompile";
+  origin?: ModSourceOrigin;
+  artifact?: ModSourceArtifact;
+  confidence?: SourceConfidence;
+  license?: SourceLicenseInfo;
+  decompiler?: { name: "CFR"; version: string };
+  artifacts?: SourceArtifactRecord[];
+  layout?: {
+    stableSourcePath: "src";
+    readableSourcePath: "source-code" | "decompiled-code";
+    sourceArchiveRetained: boolean;
+  };
   javaFiles: number;
+  generatedAt?: string;
   path: string;
   sourcePath: string;
+  reportPath?: string;
 }
 
 export interface ProjectSourceIndex {
   schema: 1;
   generatedAt: string;
   projectPath: string;
-  minecraft: MinecraftSourceEntry;
+  /** Present once Minecraft sources have been prepared for this project. */
+  minecraft?: MinecraftSourceEntry;
   mods: ModSourceEntry[];
 }
 
 export interface ProjectSourceStatus {
   ready: boolean;
   rootPath: string;
+  minecraftReady?: boolean;
   minecraftPath?: string;
   modCount: number;
+  mods?: Array<{
+    modId: string;
+    modName: string;
+    modVersion: string;
+    sourceKind: ModSourceEntry["sourceKind"];
+    confidence?: SourceConfidence;
+    license?: SourceLicenseInfo;
+    reportPath?: string;
+    reportFilePath?: string;
+  }>;
   generatedAt?: string;
+}
+
+export interface RuntimeModSourceCandidate {
+  file: string;
+  relativePath: string;
+  modId?: string;
+  modName?: string;
+  modVersion?: string;
+  artifactSha256?: string;
+  supported: boolean;
+  source?: {
+    ready: boolean;
+    sourceKind?: ModSourceEntry["sourceKind"];
+    confidence?: SourceConfidence;
+    sourcePath?: string;
+    javaFiles?: number;
+  };
 }
 
 export interface SourceTaskSnapshot {

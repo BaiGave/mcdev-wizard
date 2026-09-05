@@ -24,6 +24,10 @@
       <span class="nav-ico" data-icon="plus"></span>
       <span>新建模组</span>
     </button>
+    <button class="nav-btn" data-view="adapt" title="适配中心">
+      <span class="nav-ico" data-icon="sparkles"></span>
+      <span>适配中心</span>
+    </button>
     <button class="nav-btn" data-view="external" title="外部项目">
       <span class="nav-ico" data-icon="external"></span>
       <span>外部项目</span>
@@ -211,6 +215,72 @@
         </div>
       </div>
     </div>
+    <div class="view" id="view-adapt">
+      <div class="adapt-type-tabs" aria-label="项目类型">
+        <button class="active" type="button">Mods</button>
+        <button type="button" disabled>Resource Packs</button>
+        <button type="button" disabled>Data Packs</button>
+        <button type="button" disabled>Shaders</button>
+        <button type="button" disabled>Modpacks</button>
+        <button type="button" disabled>Plugins</button>
+      </div>
+      <div class="page-header">
+        <div>
+          <h2>适配中心</h2>
+          <p class="sub">搜索外部模组，锁定源码或反编译结果</p>
+        </div>
+        <div class="toolbar adapt-toolbar">
+          <select id="adapt-variant-select" class="compact-select" aria-label="绑定变体">
+            <option value="">未绑定变体</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" id="btn-adapt-refresh" type="button">刷新</button>
+        </div>
+      </div>
+      <div class="adapt-grid">
+        <aside class="adapt-search-panel" aria-label="筛选">
+          <input id="adapt-loader" type="hidden">
+          <input id="adapt-category" type="hidden">
+          <div class="adapt-filter-card">
+            <div class="adapt-filter-head"><strong>Game version</strong><button type="button" data-adapt-clear="mc">All</button></div>
+            <label class="search-field adapt-mini-search">
+              <span data-icon="search"></span>
+              <input class="search-input" id="adapt-mc" placeholder="Search or type version">
+            </label>
+            <div class="adapt-filter-list" id="adapt-version-list"></div>
+            <label class="checkbox-row adapt-show-more"><input type="checkbox" id="adapt-show-all-versions"> Show all versions</label>
+          </div>
+          <div class="adapt-filter-card">
+            <div class="adapt-filter-head"><strong>Loader</strong><button type="button" data-adapt-clear="loader">All</button></div>
+            <div class="adapt-filter-list" id="adapt-loader-list"></div>
+          </div>
+          <div class="adapt-filter-card">
+            <div class="adapt-filter-head"><strong>Category</strong><button type="button" data-adapt-clear="category">All</button></div>
+            <div class="adapt-filter-list adapt-category-list" id="adapt-category-list"></div>
+          </div>
+          <div class="adapt-warning" id="adapt-warning" hidden></div>
+        </aside>
+        <section class="adapt-results-panel">
+          <label class="search-field adapt-search-field">
+            <span data-icon="search"></span>
+            <input class="search-input" id="adapt-query" placeholder="Search mods...">
+          </label>
+          <div class="adapt-result-tools">
+            <label>Source <select id="adapt-source"><option value="all">All</option><option value="modrinth">Modrinth</option><option value="curseforge">CurseForge</option></select></label>
+            <label>Sort by <select id="adapt-sort"><option value="downloads">Downloads</option><option value="relevance">Relevance</option><option value="follows">Follows</option><option value="newest">Newest</option><option value="updated">Updated</option></select></label>
+            <label>View <select id="adapt-limit"><option value="20">20</option><option value="40">40</option><option value="60">60</option></select></label>
+            <button class="btn btn-primary btn-sm" id="btn-adapt-search" type="button">Search</button>
+          </div>
+          <div class="section-title"><h3>搜索结果</h3><span class="muted-placeholder" id="adapt-count">正在加载默认列表</span></div>
+          <div class="adapt-results" id="adapt-results"></div>
+          <div class="adapt-pager">
+            <button class="btn btn-secondary btn-sm" id="adapt-prev" type="button">上一页</button>
+            <span id="adapt-page-label" class="muted-placeholder">1</span>
+            <button class="btn btn-secondary btn-sm" id="adapt-next" type="button">下一页</button>
+          </div>
+        </section>
+      </div>
+      <section class="adapt-detail-panel" id="adapt-detail"></section>
+    </div>
     <div class="view" id="view-external">
       <div class="page-header">
         <div>
@@ -310,6 +380,51 @@
       <button class="btn btn-danger btn-sm" id="modal-source-cancel" hidden>取消源码准备</button>
       <button class="btn btn-secondary btn-sm" id="modal-copy-log" hidden>复制全部</button>
       <button class="btn btn-secondary btn-sm" id="modal-close">关闭</button>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="source-hub-modal" role="presentation">
+  <div class="modal source-hub-modal" role="dialog" aria-modal="true" aria-labelledby="source-hub-title" tabindex="-1">
+    <div class="source-hub-head">
+      <div><h3 id="source-hub-title">源码</h3><p id="source-hub-subtitle" class="source-hub-subtitle"></p></div>
+      <button class="btn btn-icon" id="source-hub-close" type="button" title="关闭" aria-label="关闭"><span data-icon="close"></span></button>
+    </div>
+    <div class="source-hub-list">
+      <div class="source-hub-row">
+        <span data-icon="folder"></span>
+        <div><strong>项目开发源码</strong><span id="source-hub-project-status">检查中</span></div>
+        <button class="btn btn-primary btn-sm" id="source-hub-project" type="button">准备</button>
+      </div>
+      <div class="source-hub-row">
+        <span data-icon="import"></span>
+        <div><strong>运行模组源码</strong><span id="source-hub-runtime-status">扫描 run/mods</span></div>
+        <button class="btn btn-secondary btn-sm" id="source-hub-runtime" type="button">管理</button>
+      </div>
+      <div class="source-hub-row">
+        <span data-icon="search"></span>
+        <div><strong>上游源码</strong><span>Modrinth 与 GitHub</span></div>
+        <button class="btn btn-secondary btn-sm" id="source-hub-adapt" type="button">查找</button>
+      </div>
+    </div>
+    <div class="source-hub-footer">
+      <button class="btn btn-quiet btn-sm" id="source-hub-gradle" type="button"><span data-icon="refresh"></span>同步 Gradle 依赖源码</button>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="runtime-sources-modal" role="presentation">
+  <div class="modal runtime-sources-modal" role="dialog" aria-modal="true" aria-labelledby="runtime-sources-title" tabindex="-1">
+    <div class="runtime-sources-head">
+      <div><h3 id="runtime-sources-title">联动源码</h3><p id="runtime-sources-path" class="runtime-sources-path"></p></div>
+      <button class="btn btn-icon" id="runtime-sources-refresh" type="button" title="刷新运行模组" aria-label="刷新运行模组"><span data-icon="refresh"></span></button>
+    </div>
+    <div class="runtime-sources-toolbar">
+      <span id="runtime-sources-summary" class="runtime-sources-summary">正在扫描</span>
+      <button class="btn btn-secondary btn-sm" id="runtime-sources-select-all" type="button">全选未准备</button>
+    </div>
+    <div class="runtime-sources-list" id="runtime-sources-list"></div>
+    <div class="btn-group dialog-actions">
+      <button class="btn btn-secondary btn-sm" id="runtime-sources-cancel" type="button">取消</button>
+      <button class="btn btn-primary btn-sm" id="runtime-sources-prepare" type="button"><span data-icon="sparkles"></span>准备所选</button>
     </div>
   </div>
 </div>

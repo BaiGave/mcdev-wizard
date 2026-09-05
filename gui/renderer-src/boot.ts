@@ -762,9 +762,15 @@ export function bootWorkbench(): void {
 
       var missingBtn = "";
       var sourceReady = v.sourceStatus?.ready === true;
+      var sourceMods = v.sourceStatus?.mods || [];
+      var sourceReports = sourceMods.filter(function (m) { return !!m.reportFilePath; });
       var sourceText = sourceReady
-        ? "开发源码已准备 · MC + " + (v.sourceStatus.modCount || 0) + " 个前置"
+        ? (v.sourceStatus?.minecraftReady
+          ? "开发源码已准备 · MC + " + (v.sourceStatus.modCount || 0) + " 个模组"
+          : (v.sourceStatus.modCount || 0) + " 个模组源码已准备")
         : "开发源码尚未准备";
+
+      if (sourceReady && sourceReports.length) sourceText += " / " + sourceReports.length + " reports";
 
       item.innerHTML =
         '<div class="variant-item-header">' +
@@ -777,19 +783,28 @@ export function bootWorkbench(): void {
         '<div class="variant-actions">' +
           '<button class="btn btn-primary btn-sm" data-action="build">' + icon("build") + '构建</button>' +
           '<button class="btn btn-secondary btn-sm" data-action="run">' + icon("play") + '启动</button>' +
-          '<button class="btn btn-secondary btn-sm" data-action="logs">' + icon("terminal") + '日志</button>' +
-          '<button class="btn btn-secondary btn-sm btn-prepare-sources" data-action="sources">' + icon(sourceReady ? "folder" : "sparkles") + (sourceReady ? '打开开发源码' : '准备开发源码') + '</button>' +
+          '<button class="btn btn-secondary btn-sm btn-prepare-sources" data-action="source-hub">' + icon(sourceReady ? "folder" : "sparkles") + '源码</button>' +
           '<button class="btn btn-icon" data-action="folder" title="打开项目文件夹" aria-label="打开项目文件夹">' + icon("folder") + '</button>' +
           '<details class="action-menu"><summary class="btn btn-quiet btn-sm" aria-label="更多变体操作">' + icon("more") + '</summary>' +
             '<div class="action-menu-popover">' +
+              '<button data-action="logs">日志</button>' +
               '<button data-action="cursor">用 Cursor 打开</button>' +
               '<button data-action="relocate">重新定位项目</button>' + missingBtn +
-              (sourceReady ? '<button data-action="sources-refresh">重新准备开发源码</button>' : '') +
               '<span class="menu-separator"></span>' +
               '<button data-action="unlink">仅移除登记</button>' +
               '<button class="menu-danger" data-action="delete">删除变体</button>' +
             '</div></details>' +
         '</div>';
+
+      if (sourceReports.length) {
+        var popover = item.querySelector(".action-menu-popover");
+        var separator = popover?.querySelector(".menu-separator");
+        var reportButton = document.createElement("button");
+        reportButton.type = "button";
+        reportButton.dataset.action = "sources-report";
+        reportButton.textContent = "Open dependency API reports";
+        popover?.insertBefore(reportButton, separator || null);
+      }
 
       item.querySelectorAll("[data-action]").forEach(function (btn) {
         btn.addEventListener("click", function (e) {
@@ -805,15 +820,279 @@ export function bootWorkbench(): void {
     });
   }
 
-  async function prepareVariantSources(modId, variant, force) {
+  async function openVariantSourceReports(variant) {
+    var mods = (variant.sourceStatus?.mods || []).filter(function (m) { return !!m.reportFilePath; });
+    if (!mods.length) {
+      notify("No dependency API reports are available yet", "warning");
+      return;
+    }
+    if (mods.length === 1) {
+      await api("/api/open-folder", { method: "POST", body: { path: mods[0].reportFilePath } });
+      notify("Opened dependency API report");
+      return;
+    }
+    var reportRoot = variant.sourceStatus?.rootPath
+      ? variant.sourceStatus.rootPath + "\\mods"
+      : mods[0].reportFilePath;
+    await api("/api/open-folder", { method: "POST", body: { path: reportRoot } });
+    showLogModal(
+      "Dependency API Reports",
+      mods.map(function (m) {
+        return [
+          (m.modName || m.modId) + " " + (m.modVersion || ""),
+          "  source: " + (m.sourceKind || "unknown") + (m.confidence ? " / " + m.confidence : ""),
+          "  license: " + (m.license?.id || m.license?.name || "unknown"),
+          "  report: " + m.reportFilePath,
+        ].join("\n");
+      }).join("\n\n"),
+    );
+    notify("Opened dependency reports folder");
+  }
+
+  var sourceHubState = {
+    modId: "",
+    variant: null as any,
+  };
+
+  function closeSourceHub() {
+    $("source-hub-modal")?.classList.remove("visible");
+  }
+
+  async function openSourceHub(modId, variant) {
+    sourceHubState.modId = modId;
+    sourceHubState.variant = variant;
+    var sourceStatus = variant.sourceStatus || {};
+    var minecraftReady = sourceStatus.minecraftReady === true;
+    var modCount = sourceStatus.modCount || 0;
+    setText("source-hub-subtitle", (LOADER_LABELS[variant.loader] || variant.loader) + " " + variant.mcVersion);
+    setText(
+      "source-hub-project-status",
+      minecraftReady ? "Minecraft 已就绪 · " + modCount + " 个模组源码" : "尚未投影到项目 · " + modCount + " 个模组源码",
+    );
+    var projectButton = $("source-hub-project") as HTMLButtonElement | null;
+    if (projectButton) projectButton.textContent = minecraftReady ? "打开" : "准备";
+    setText("source-hub-runtime-status", "正在扫描 run/mods");
+    $("source-hub-modal")?.classList.add("visible");
+    try {
+      var data = await api("/api/variants/" + encodeURIComponent(variant.id) + "/runtime-mods") as any;
+      var runtimeMods = (data.mods || []).filter(function (item) { return item.supported; });
+      var runtimeReady = runtimeMods.filter(function (item) { return item.source?.ready; }).length;
+      setText("source-hub-runtime-status", runtimeMods.length
+        ? runtimeMods.length + " 个模组 · " + runtimeReady + " 已准备"
+        : "run/mods 中没有模组");
+    } catch {
+      setText("source-hub-runtime-status", "run/mods 扫描失败");
+    }
+  }
+
+  $("source-hub-close")?.addEventListener("click", closeSourceHub);
+  $("source-hub-project")?.addEventListener("click", function () {
+    var variant = sourceHubState.variant;
+    if (!variant) return;
+    closeSourceHub();
+    if (variant.sourceStatus?.minecraftReady && variant.sourceStatus?.rootPath) {
+      void api("/api/open-folder", { method: "POST", body: { path: variant.sourceStatus.rootPath } });
+      return;
+    }
+    void prepareVariantSources(sourceHubState.modId, variant, false, false);
+  });
+  $("source-hub-runtime")?.addEventListener("click", function () {
+    var variant = sourceHubState.variant;
+    if (!variant) return;
+    closeSourceHub();
+    void openRuntimeSources(variant);
+  });
+  $("source-hub-adapt")?.addEventListener("click", function () {
+    var variant = sourceHubState.variant;
+    if (!variant) return;
+    closeSourceHub();
+    openAdaptCenterForVariant(variant);
+  });
+  $("source-hub-gradle")?.addEventListener("click", function () {
+    var variant = sourceHubState.variant;
+    if (!variant) return;
+    closeSourceHub();
+    void prepareVariantSources(sourceHubState.modId, variant, false, true);
+  });
+
+  var runtimeSourcesState = {
+    variant: null as any,
+    mods: [] as any[],
+    selected: new Set<string>(),
+  };
+
+  function runtimeSourceBadge(item) {
+    if (!item.supported) return { label: "未识别", className: "unsupported" };
+    if (!item.source?.ready) return { label: "未准备", className: "" };
+    if (item.source.sourceKind === "github-source") return { label: "GitHub 源码", className: "ready" };
+    if (item.source.sourceKind === "sources-jar") return { label: "源码包", className: "ready" };
+    if (item.source.sourceKind === "cfr-decompile") return { label: "CFR 反编译", className: "cfr" };
+    return { label: "已准备", className: "ready" };
+  }
+
+  function closeRuntimeSourcesModal() {
+    $("runtime-sources-modal")?.classList.remove("visible");
+  }
+
+  function renderRuntimeSources() {
+    var list = $("runtime-sources-list");
+    if (!list) return;
+    var mods = runtimeSourcesState.mods;
+    var supported = mods.filter(function (item) { return item.supported; });
+    var ready = supported.filter(function (item) { return item.source?.ready; });
+    setText("runtime-sources-summary", mods.length
+      ? mods.length + " 个 JAR · " + ready.length + " 已准备 · " + runtimeSourcesState.selected.size + " 已选择"
+      : "未发现 JAR");
+    var prepare = $("runtime-sources-prepare") as HTMLButtonElement | null;
+    if (prepare) {
+      prepare.disabled = runtimeSourcesState.selected.size === 0;
+      prepare.innerHTML = icon("sparkles") + "准备所选" + (runtimeSourcesState.selected.size ? " (" + runtimeSourcesState.selected.size + ")" : "");
+    }
+    list.innerHTML = "";
+    if (!mods.length) {
+      list.innerHTML = '<p class="muted-placeholder">run/mods 中没有可扫描的 JAR。</p>';
+      return;
+    }
+    mods.forEach(function (item) {
+      var badge = runtimeSourceBadge(item);
+      var row = document.createElement("div");
+      row.className = "runtime-source-row";
+      var checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = runtimeSourcesState.selected.has(item.file);
+      checkbox.disabled = !item.supported;
+      checkbox.setAttribute("aria-label", "选择 " + (item.modName || item.relativePath));
+      checkbox.addEventListener("change", function () {
+        if (checkbox.checked) runtimeSourcesState.selected.add(item.file);
+        else runtimeSourcesState.selected.delete(item.file);
+        renderRuntimeSources();
+      });
+      var copy = document.createElement("div");
+      copy.className = "runtime-source-copy";
+      copy.innerHTML =
+        '<div class="runtime-source-title"><strong>' + esc(item.modName || item.modId || "未知 JAR") + '</strong>'
+          + (item.modVersion ? '<span>' + esc(item.modVersion) + '</span>' : "") + '</div>'
+          + '<div class="runtime-source-file">' + esc(item.relativePath) + (item.modId ? " · " + esc(item.modId) : "") + '</div>';
+      var meta = document.createElement("div");
+      meta.className = "runtime-source-meta";
+      meta.innerHTML = '<span class="runtime-source-badge ' + badge.className + '">' + esc(badge.label) + '</span>';
+      if (item.source?.ready && item.source.sourcePath) {
+        var open = document.createElement("button");
+        open.type = "button";
+        open.className = "btn btn-icon";
+        open.title = "打开源码";
+        open.setAttribute("aria-label", "打开源码");
+        open.innerHTML = icon("folder");
+        open.addEventListener("click", function () {
+          void api("/api/open-folder", { method: "POST", body: { path: item.source.sourcePath } });
+        });
+        meta.appendChild(open);
+      }
+      row.append(checkbox, copy, meta);
+      list.appendChild(row);
+    });
+  }
+
+  async function refreshRuntimeSources(keepSelection?: boolean) {
+    var variant = runtimeSourcesState.variant;
+    if (!variant) return;
+    var list = $("runtime-sources-list");
+    if (list) list.innerHTML = '<p class="loading-placeholder">正在扫描 run/mods…</p>';
+    var data = await api("/api/variants/" + encodeURIComponent(variant.id) + "/runtime-mods") as any;
+    runtimeSourcesState.mods = data.mods || [];
+    var available = new Set(runtimeSourcesState.mods.filter(function (item) { return item.supported; }).map(function (item) { return item.file; }));
+    if (keepSelection) {
+      runtimeSourcesState.selected = new Set(Array.from(runtimeSourcesState.selected).filter(function (file) { return available.has(file); }));
+    } else {
+      runtimeSourcesState.selected = new Set(runtimeSourcesState.mods
+        .filter(function (item) { return item.supported && !item.source?.ready; })
+        .map(function (item) { return item.file; }));
+    }
+    setText("runtime-sources-path", data.rootPath || "run/mods");
+    renderRuntimeSources();
+  }
+
+  async function openRuntimeSources(variant) {
+    runtimeSourcesState.variant = variant;
+    runtimeSourcesState.mods = [];
+    runtimeSourcesState.selected.clear();
+    $("runtime-sources-modal")?.classList.add("visible");
+    try {
+      await refreshRuntimeSources(false);
+    } catch (err) {
+      closeRuntimeSourcesModal();
+      showError("读取运行模组失败：" + (err as Error).message);
+    }
+  }
+
+  async function prepareRuntimeSources() {
+    var variant = runtimeSourcesState.variant;
+    var files = Array.from(runtimeSourcesState.selected);
+    if (!variant || !files.length) return;
+    closeRuntimeSourcesModal();
     hideError();
-    showModal("准备开发源码", "正在识别 Minecraft、映射与 Gradle 前置依赖…");
+    showModal("准备联动源码", "正在处理所选 run/mods 模组…");
+    var cancelButton = $("modal-source-cancel") as HTMLButtonElement | null;
+    if (cancelButton) cancelButton.hidden = false;
+    try {
+      var started = await api("/api/variants/" + encodeURIComponent(variant.id) + "/runtime-mods/sources", {
+        method: "POST",
+        body: { files: files },
+      }) as any;
+      var taskId = started.task?.id;
+      if (!taskId) throw new Error("服务端未返回源码任务");
+      while (true) {
+        var status = await api("/api/sources/status") as any;
+        var task = status.task;
+        if (!task || task.id !== taskId) throw new Error("源码任务状态已丢失");
+        setModalLogContent((task.currentPhase ? "阶段: " + sourcePhaseLabel(task.currentPhase) + "\n" : "") + (task.logs || []).join("\n"), { scrollToEnd: true });
+        if (task.state !== "running") {
+          if (task.state === "completed") {
+            invalidateDetailCache();
+            await refreshDetail({ force: true });
+            closeModal();
+            await openRuntimeSources(variant);
+            notify("所选运行模组源码已准备", task.dependencyFailures ? "warning" : "success");
+          } else if (task.state === "cancelled") {
+            closeModal();
+            notify("联动源码准备已取消", "warning");
+          } else {
+            throw new Error(task.lastError || "联动源码准备失败");
+          }
+          break;
+        }
+        await new Promise(function (resolve) { setTimeout(resolve, 900); });
+      }
+    } catch (err) {
+      showError("联动源码准备失败：" + (err as Error).message);
+      showModal("联动源码准备失败", (err as Error).message);
+    } finally {
+      if (cancelButton) cancelButton.hidden = true;
+    }
+  }
+
+  $("runtime-sources-cancel")?.addEventListener("click", closeRuntimeSourcesModal);
+  $("runtime-sources-refresh")?.addEventListener("click", function () { void refreshRuntimeSources(true); });
+  $("runtime-sources-select-all")?.addEventListener("click", function () {
+    runtimeSourcesState.selected = new Set(runtimeSourcesState.mods
+      .filter(function (item) { return item.supported && !item.source?.ready; })
+      .map(function (item) { return item.file; }));
+    renderRuntimeSources();
+  });
+  $("runtime-sources-prepare")?.addEventListener("click", function () { void prepareRuntimeSources(); });
+
+  async function prepareVariantSources(modId, variant, force, includeDependencies = false) {
+    hideError();
+    showModal(
+      includeDependencies ? "同步 Gradle 依赖源码" : "准备项目开发源码",
+      includeDependencies ? "正在解析 Gradle 依赖；项目源码入口会先创建。" : "正在投影 Minecraft 开发源码…",
+    );
     var cancelButton = $("modal-source-cancel") as HTMLButtonElement | null;
     if (cancelButton) cancelButton.hidden = false;
     try {
       var started = await api("/api/variants/" + variant.id + "/sources", {
         method: "POST",
-        body: { force: force === true },
+        body: { force: force === true, includeDependencies: includeDependencies === true },
       });
       var taskId = started.task?.id;
       if (!taskId) throw new Error("服务端未返回源码任务");
@@ -823,7 +1102,7 @@ export function bootWorkbench(): void {
         if (!task || task.id !== taskId) throw new Error("源码任务状态已丢失");
         var log = $("modal-log");
         if (log) {
-          var dependencyProgress = task.currentPhase === "dependencies"
+          var dependencyProgress = includeDependencies && task.currentPhase === "dependencies"
             ? (task.dependenciesFound
               ? " · 前置模组 " + (task.dependenciesPrepared || 0) + "/" + task.dependenciesFound
               : " · Gradle 正在解析前置依赖")
@@ -838,12 +1117,22 @@ export function bootWorkbench(): void {
             await api("/api/open-folder", { method: "POST", body: { path: task.outputPath } });
             invalidateDetailCache(modId);
             await refreshDetail({ force: true });
+            var refreshed = state.detailCache[modId]?.mod?.variants?.find(function (v) { return v.id === variant.id; });
+            var reportMods = (refreshed?.sourceStatus?.mods || []).filter(function (m) { return !!m.reportFilePath; });
             showModal(
               "开发源码已准备",
-              "项目源码目录：" + task.outputPath + "\nMinecraft 源码与 "
-                + (task.dependenciesPrepared || 0) + " 个前置模组源码已就绪。",
+              "项目源码目录：" + task.outputPath + (includeDependencies
+                ? "\nMinecraft 源码与 " + (task.dependenciesPrepared || 0) + " 个依赖模组源码已就绪。"
+                : "\nMinecraft 源码已就绪。"),
             );
             notify("开发源码已准备并打开文件夹", task.dependencyFailures ? "warning" : "success");
+            if (reportMods.length) {
+              setModalLogContent(
+                getLastLogModalText() + "\n\nDependency API reports:\n" + reportMods.map(function (m) {
+                  return "- " + (m.modName || m.modId) + " " + (m.modVersion || "") + " [" + (m.sourceKind || "unknown") + "]";
+                }).join("\n"),
+              );
+            }
           } else if (task.state === "cancelled") {
             notify("源码准备已取消", "warning");
             closeModal();
@@ -875,15 +1164,10 @@ export function bootWorkbench(): void {
       invalidateDetailCache(modId);
       await refreshDetail({ force: true });
       notify("客户端正在启动，请稍候（首次需下载依赖，游戏窗口打开前队列会显示运行中）");
-    } else if (action === "sources") {
-      if (variant.sourceStatus?.ready && variant.sourceStatus.rootPath) {
-        await api("/api/open-folder", { method: "POST", body: { path: variant.sourceStatus.rootPath } });
-        notify("已打开开发源码文件夹");
-      } else {
-        await prepareVariantSources(modId, variant, false);
-      }
-    } else if (action === "sources-refresh") {
-      await prepareVariantSources(modId, variant, true);
+    } else if (action === "source-hub") {
+      await openSourceHub(modId, variant);
+    } else if (action === "sources-report") {
+      await openVariantSourceReports(variant);
     } else if (action === "folder") {
       await api("/api/open-folder", { method: "POST", body: { path: variant.projectPath } });
       notify("已请求打开项目文件夹");
@@ -2413,6 +2697,486 @@ export function bootWorkbench(): void {
     await api("/api/open-folder", { method: "POST", body: { path: value } });
   }
 
+  // ============ 外部模组适配中心 ============
+
+  var adaptState = {
+    searchRequestId: 0,
+    resolveRequestId: 0,
+    offset: 0,
+    limit: 20,
+    totalHits: 0,
+    results: [] as any[],
+    selectedProjectId: "",
+    category: "",
+    target: null as any,
+    variantId: "",
+    lastSourceResult: null as any,
+  };
+
+  var ADAPT_DEFAULT_VERSIONS = [
+    "26.2", "26.1.2", "26.1.1", "26.1",
+    "1.21.11", "1.21.10", "1.21.9", "1.21.8", "1.21.7", "1.21.6",
+    "1.21.5", "1.21.4", "1.21.3", "1.21.2", "1.21.1", "1.20.1",
+  ];
+  var ADAPT_CATEGORIES = [
+    ["adventure", "Adventure"],
+    ["cursed", "Cursed"],
+    ["decoration", "Decoration"],
+    ["economy", "Economy"],
+    ["equipment", "Equipment"],
+    ["food", "Food"],
+    ["game-mechanics", "Game Mechanics"],
+    ["library", "Library"],
+    ["magic", "Magic"],
+    ["management", "Management"],
+    ["minigame", "Minigame"],
+    ["mobs", "Mobs"],
+    ["optimization", "Optimization"],
+    ["social", "Social"],
+    ["storage", "Storage"],
+    ["technology", "Technology"],
+    ["transportation", "Transportation"],
+    ["utility", "Utility"],
+    ["worldgen", "World Generation"],
+  ];
+  var ADAPT_LOADERS = [
+    ["fabric", "Fabric"],
+    ["forge", "Forge"],
+    ["neoforge", "NeoForge"],
+  ];
+
+  function allWorkbenchVariants() {
+    var out: any[] = [];
+    (state.mods || []).forEach(function (mod: any) {
+      (mod.variants || []).forEach(function (variant: any) {
+        out.push({ mod: mod, variant: variant });
+      });
+    });
+    return out;
+  }
+
+  function selectedAdaptVariant() {
+    if (!adaptState.variantId) return null;
+    return allWorkbenchVariants().find(function (item) { return item.variant.id === adaptState.variantId; }) || null;
+  }
+
+  function renderAdaptVariantSelect() {
+    var select = $("adapt-variant-select") as HTMLSelectElement | null;
+    if (!select) return;
+    var previous = adaptState.variantId || select.value;
+    select.innerHTML = '<option value="">未绑定变体</option>';
+    allWorkbenchVariants().forEach(function (item) {
+      var option = document.createElement("option");
+      option.value = item.variant.id;
+      option.textContent = item.mod.displayName + " · " + (LOADER_LABELS[item.variant.loader] || item.variant.loader) + " " + item.variant.mcVersion;
+      select.appendChild(option);
+    });
+    if (previous && Array.from(select.options).some(function (option) { return option.value === previous; })) {
+      select.value = previous;
+      adaptState.variantId = previous;
+    }
+  }
+
+  function applyAdaptVariantToFilters() {
+    var selected = selectedAdaptVariant();
+    if (!selected) return;
+    var loader = $("adapt-loader") as HTMLInputElement | null;
+    var mc = $("adapt-mc") as HTMLInputElement | null;
+    if (loader) loader.value = selected.variant.loader || "";
+    if (mc) mc.value = selected.variant.mcVersion || "";
+    syncAdaptFilterButtons();
+  }
+
+  function renderAdaptFilterList(
+    containerId: string,
+    values: string[][],
+    activeValue: string,
+    attrName: string,
+  ) {
+    var wrap = $(containerId);
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    values.forEach(function (item) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "adapt-filter-option" + (item[0] === activeValue ? " active" : "");
+      button.dataset[attrName] = item[0];
+      button.innerHTML = attrName === "adaptLoader"
+        ? loaderIcon(item[0]) + '<span>' + esc(item[1]) + '</span>'
+        : '<span>' + esc(item[1]) + '</span>';
+      wrap.appendChild(button);
+    });
+  }
+
+  function visibleAdaptVersions() {
+    var showAll = ($("adapt-show-all-versions") as HTMLInputElement | null)?.checked === true;
+    var typed = (($("adapt-mc") as HTMLInputElement | null)?.value || "").trim();
+    var versions = showAll
+      ? ADAPT_DEFAULT_VERSIONS
+      : ADAPT_DEFAULT_VERSIONS.slice(0, 8);
+    if (typed && !versions.includes(typed)) versions = [typed].concat(versions);
+    return versions.map(function (version) { return [version, version]; });
+  }
+
+  function renderAdaptFilters() {
+    renderAdaptFilterList("adapt-version-list", visibleAdaptVersions(), (($("adapt-mc") as HTMLInputElement | null)?.value || "").trim(), "adaptMc");
+    renderAdaptFilterList("adapt-loader-list", ADAPT_LOADERS, (($("adapt-loader") as HTMLInputElement | null)?.value || ""), "adaptLoader");
+    renderAdaptFilterList("adapt-category-list", ADAPT_CATEGORIES, adaptState.category, "adaptCategory");
+  }
+
+  function syncAdaptFilterButtons() {
+    document.querySelectorAll<HTMLElement>("[data-adapt-mc]").forEach(function (button) {
+      button.classList.toggle("active", button.dataset.adaptMc === (($("adapt-mc") as HTMLInputElement | null)?.value || "").trim());
+    });
+    document.querySelectorAll<HTMLElement>("[data-adapt-loader]").forEach(function (button) {
+      button.classList.toggle("active", button.dataset.adaptLoader === (($("adapt-loader") as HTMLInputElement | null)?.value || ""));
+    });
+    document.querySelectorAll<HTMLElement>("[data-adapt-category]").forEach(function (button) {
+      button.classList.toggle("active", button.dataset.adaptCategory === adaptState.category);
+    });
+  }
+
+  function openAdaptCenterForVariant(variant) {
+    adaptState.variantId = variant.id;
+    renderAdaptVariantSelect();
+    applyAdaptVariantToFilters();
+    setAdaptDetailMode(false);
+    showView("adapt");
+    void loadAdaptView();
+  }
+
+  function setAdaptDetailMode(enabled: boolean) {
+    $("view-adapt")?.classList.toggle("adapt-detail-mode", enabled);
+  }
+
+  function backToAdaptResults() {
+    adaptState.resolveRequestId++;
+    setAdaptDetailMode(false);
+    adaptState.target = null;
+    adaptState.lastSourceResult = null;
+    var detail = $("adapt-detail");
+    if (detail) {
+      detail.classList.remove("visible");
+      detail.innerHTML = "";
+    }
+    requestAnimationFrame(function () {
+      $("view-adapt")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  async function loadAdaptView() {
+    if (!state.modsFetchedAt) {
+      await loadMods();
+    }
+    setAdaptDetailMode(false);
+    renderAdaptVariantSelect();
+    applyAdaptVariantToFilters();
+    renderAdaptFilters();
+    if (!$("adapt-detail")?.classList.contains("visible")) {
+      var detail = $("adapt-detail");
+      if (detail) {
+        detail.classList.add("visible");
+        detail.innerHTML = '<p class="muted-placeholder">选择一个搜索结果查看版本、依赖和源码候选。</p>';
+      }
+    }
+    if (!adaptState.results.length) {
+      void searchAdaptMods(true);
+    }
+  }
+
+  function adaptSearchParams(resetOffset?: boolean) {
+    if (resetOffset) adaptState.offset = 0;
+    var query = (($("adapt-query") as HTMLInputElement | null)?.value || "").trim();
+    var source = (($("adapt-source") as HTMLSelectElement | null)?.value || "all");
+    var loader = (($("adapt-loader") as HTMLInputElement | null)?.value || "");
+    var mc = (($("adapt-mc") as HTMLInputElement | null)?.value || "").trim();
+    var sort = (($("adapt-sort") as HTMLSelectElement | null)?.value || "downloads");
+    var limit = Number((($("adapt-limit") as HTMLSelectElement | null)?.value || adaptState.limit));
+    adaptState.limit = Number.isFinite(limit) && limit > 0 ? limit : 20;
+    var params = new URLSearchParams();
+    params.set("query", query);
+    params.set("source", source);
+    params.set("sort", sort);
+    params.set("offset", String(adaptState.offset));
+    params.set("limit", String(adaptState.limit));
+    if (loader) params.set("loader", loader);
+    if (mc) params.set("mcVersion", mc);
+    if (adaptState.category) params.set("category", adaptState.category);
+    return params;
+  }
+
+  async function searchAdaptMods(resetOffset?: boolean) {
+    var requestId = ++adaptState.searchRequestId;
+    hideError();
+    var results = $("adapt-results");
+    if (results) results.innerHTML = '<p class="loading-placeholder">搜索中...</p>';
+    setText("adapt-count", "搜索中");
+    try {
+      var data = await api("/api/mod-intel/search?" + adaptSearchParams(resetOffset).toString()) as any;
+      if (requestId !== adaptState.searchRequestId) return;
+      adaptState.results = data.results || [];
+      adaptState.totalHits = data.totalHits || 0;
+      renderAdaptResults(data);
+    } catch (e) {
+      if (requestId !== adaptState.searchRequestId) return;
+      if (results) results.innerHTML = '<p class="muted-placeholder">搜索失败</p>';
+      showError("模组搜索失败：" + (e as Error).message);
+    }
+  }
+
+  function renderAdaptResults(data) {
+    var warning = $("adapt-warning");
+    var warnings = data.warnings || [];
+    if (warning) {
+      warning.hidden = warnings.length === 0;
+      warning.textContent = warnings.join(" ");
+    }
+    var total = data.totalHits || adaptState.totalHits || 0;
+    var start = total ? adaptState.offset + 1 : 0;
+    var end = Math.min(adaptState.offset + adaptState.limit, total);
+    setText("adapt-count", total + " 个结果 · " + start + "-" + end);
+    setText("adapt-page-label", total ? ("第 " + (Math.floor(adaptState.offset / adaptState.limit) + 1) + " 页") : "第 0 页");
+    var prev = $("adapt-prev") as HTMLButtonElement | null;
+    var next = $("adapt-next") as HTMLButtonElement | null;
+    if (prev) prev.disabled = adaptState.offset <= 0;
+    if (next) next.disabled = adaptState.offset + adaptState.limit >= total;
+    var results = $("adapt-results");
+    if (!results) return;
+    results.innerHTML = "";
+    if (!adaptState.results.length) {
+      results.innerHTML = '<p class="muted-placeholder">没有匹配结果</p>';
+      return;
+    }
+    adaptState.results.forEach(function (item, index) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "adapt-result" + (adaptState.selectedProjectId === item.projectId ? " selected" : "");
+      button.dataset.index = String(index);
+      var iconHtml = item.iconUrl
+        ? '<img src="' + esc(item.iconUrl) + '" alt="">'
+        : esc((item.title || "MOD").slice(0, 2).toUpperCase());
+      var loaders = (item.loaders || []).map(function (loader) { return LOADER_LABELS[loader] || loader; }).join("/");
+      var versions = (item.versions || []).slice(0, 4).join(" ");
+      var tags = [
+        loaders || "Any loader",
+        versions || "Any MC",
+        item.license || "unknown license",
+        item.openSource ? "source" : "no source link",
+      ].filter(Boolean);
+      button.innerHTML =
+        '<span class="adapt-icon">' + iconHtml + '</span>' +
+        '<span class="adapt-result-main">' +
+          '<span class="adapt-result-title"><strong>' + esc(item.title || item.slug || item.projectId) + '</strong><span class="adapt-provider">' + esc(item.provider) + '</span></span>' +
+          '<span class="adapt-result-desc">' + esc(item.description || "") + '</span>' +
+          '<span class="adapt-tags">' + tags.map(function (tag) { return '<span>' + esc(tag) + '</span>'; }).join("") + '</span>' +
+        '</span>' +
+        '<span class="adapt-result-stat">' + (item.downloads ? Number(item.downloads).toLocaleString() + " dl" : "") + '</span>';
+      button.addEventListener("click", function () {
+        void selectAdaptResult(item).catch(function (err) { showError("解析模组失败：" + (err as Error).message); });
+      });
+      results.appendChild(button);
+    });
+  }
+
+  async function selectAdaptResult(item) {
+    var requestId = ++adaptState.resolveRequestId;
+    adaptState.selectedProjectId = item.projectId;
+    adaptState.lastSourceResult = null;
+    renderAdaptResults({ totalHits: adaptState.totalHits, warnings: [], results: adaptState.results });
+    var detail = $("adapt-detail");
+    if (detail) {
+      setAdaptDetailMode(true);
+      detail.classList.add("visible");
+      detail.innerHTML = '<p class="loading-placeholder">正在解析版本与源码候选...</p>';
+      requestAnimationFrame(function () {
+        detail.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+    var loader = (($("adapt-loader") as HTMLInputElement | null)?.value || undefined) as string | undefined;
+    var mc = (($("adapt-mc") as HTMLInputElement | null)?.value || "").trim() || undefined;
+    try {
+      var resolved = await api("/api/mod-intel/resolve", {
+        method: "POST",
+        body: {
+          kind: "modrinth",
+          projectIdOrSlug: item.slug || item.projectId,
+          loader: loader || undefined,
+          mcVersion: mc,
+        },
+      }) as any;
+      if (requestId !== adaptState.resolveRequestId) return;
+      adaptState.target = resolved.target;
+      renderAdaptDetail(resolved.target);
+    } catch (err) {
+      if (requestId === adaptState.resolveRequestId) throw err;
+    }
+  }
+
+  function renderAdaptDetail(target) {
+    var detail = $("adapt-detail");
+    if (!detail) return;
+    detail.classList.add("visible");
+    var version = target.selectedVersion || {};
+    var deps = version.dependencies || [];
+    var files = version.files || [];
+    var sourceRows = (target.sourceCandidates || []).map(function (candidate, index) {
+      var checked = index === 0 ? " checked" : "";
+      return '<label class="adapt-source-row">' +
+        '<input type="radio" name="adapt-source-choice" value="' + esc(candidate.sourceKind) + '"' + checked + '>' +
+        '<span><strong>' + esc(candidate.sourceKind) + '</strong><br><span>' + esc(candidate.reason || candidate.provider) + '</span></span>' +
+        '<span>' + esc(candidate.confidence || "unknown") + '</span>' +
+      '</label>';
+    }).join("");
+    var dependencyList = deps.length
+      ? deps.map(function (dep) {
+        return '<span>' + esc(dep.dependencyType || "dependency") + (dep.projectId ? " · " + dep.projectId : "") + '</span>';
+      }).join("")
+      : '<span>无依赖记录</span>';
+    var fileList = files.length
+      ? files.map(function (file) { return '<span>' + esc(file.fileName) + '</span>'; }).join("")
+      : '<span>无文件记录</span>';
+    var snippet = (target.dependencySnippets || [])[0] || "No dependency snippet is available for this provider.";
+    var result = adaptState.lastSourceResult;
+    detail.innerHTML =
+      '<button class="back-link" id="adapt-detail-back" type="button">' + icon("chevron-left") + '返回搜索结果</button>' +
+      '<div class="adapt-detail-head">' +
+        '<div><h3>' + esc(target.modName || target.title) + '</h3>' +
+          '<p>' + esc(target.projectUrl || target.sourceUrl || target.provider) + '</p>' +
+          '<div class="adapt-detail-meta">' +
+            '<span>modId: ' + esc(target.modId || "-") + '</span>' +
+            '<span>version: ' + esc(target.modVersion || "-") + '</span>' +
+            '<span>loader: ' + esc(target.loader || (($("adapt-loader") as HTMLInputElement | null)?.value || "-")) + '</span>' +
+            '<span>MC: ' + esc(target.minecraftVersion || (($("adapt-mc") as HTMLInputElement | null)?.value || "-")) + '</span>' +
+            '<span>license: ' + esc(target.license || "unknown") + '</span>' +
+          '</div></div>' +
+        '<div class="adapt-detail-actions">' +
+          '<button class="btn btn-primary btn-sm" id="btn-adapt-prepare" type="button">' + icon("sparkles") + '准备源码</button>' +
+          '<button class="btn btn-secondary btn-sm" id="btn-adapt-save" type="button">保存适配档案</button>' +
+          '<button class="btn btn-secondary btn-sm" id="btn-adapt-open-source" type="button"' + (result ? "" : " disabled") + '>打开源码</button>' +
+          '<button class="btn btn-secondary btn-sm" id="btn-adapt-open-report" type="button"' + (result ? "" : " disabled") + '>打开报告</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="adapt-detail-grid">' +
+        '<div class="adapt-detail-block"><h4>源码候选</h4><div class="adapt-source-list">' + sourceRows + '</div></div>' +
+        '<div class="adapt-detail-block"><h4>依赖片段</h4><pre class="adapt-snippet" id="adapt-snippet">' + esc(snippet) + '</pre><div class="adapt-detail-actions"><button class="btn btn-secondary btn-sm" id="btn-adapt-copy-snippet" type="button">' + icon("copy") + '复制片段</button></div></div>' +
+        '<div class="adapt-detail-block"><h4>版本文件</h4><div class="adapt-tags">' + fileList + '</div></div>' +
+        '<div class="adapt-detail-block"><h4>依赖关系</h4><div class="adapt-tags">' + dependencyList + '</div></div>' +
+      '</div>';
+    $("adapt-detail-back")?.addEventListener("click", backToAdaptResults);
+    $("btn-adapt-prepare")?.addEventListener("click", function () { void prepareAdaptSources(); });
+    $("btn-adapt-save")?.addEventListener("click", function () { void saveAdaptProfile(); });
+    $("btn-adapt-open-source")?.addEventListener("click", function () { void openAdaptSource(); });
+    $("btn-adapt-open-report")?.addEventListener("click", function () { void openAdaptReport(); });
+    $("btn-adapt-copy-snippet")?.addEventListener("click", function () { void copyAdaptSnippet(); });
+  }
+
+  function selectedAdaptSourceKind() {
+    return (document.querySelector('input[name="adapt-source-choice"]:checked') as HTMLInputElement | null)?.value || undefined;
+  }
+
+  async function prepareAdaptSources() {
+    if (!adaptState.target) return;
+    hideError();
+    var selected = selectedAdaptVariant();
+    var loader = (($("adapt-loader") as HTMLInputElement | null)?.value || adaptState.target.loader || selected?.variant.loader || "") as string;
+    var mc = (($("adapt-mc") as HTMLInputElement | null)?.value || adaptState.target.minecraftVersion || selected?.variant.mcVersion || "").trim();
+    if (!loader || !mc) {
+      showError("请先选择加载器和 Minecraft 版本");
+      return;
+    }
+    showModal("准备外部模组源码", "正在下载文件并准备源码...");
+    try {
+      var started = await api("/api/mod-intel/sources", {
+        method: "POST",
+        body: {
+          target: adaptState.target,
+          loader: loader,
+          mcVersion: mc,
+          projectPath: selected?.variant.projectPath,
+          preferredSourceKind: selectedAdaptSourceKind(),
+        },
+      }) as any;
+      var taskId = started.task?.id;
+      if (!taskId) throw new Error("服务端未返回源码任务");
+      while (true) {
+        var status = await api("/api/mod-intel/status") as any;
+        var task = status.task;
+        if (!task || task.id !== taskId) throw new Error("源码任务状态已丢失");
+        setModalLogContent(
+          (task.phase ? "阶段: " + task.phase + "\n" : "")
+          + (task.logs || []).join("\n"),
+          { scrollToEnd: true },
+        );
+        if (task.state !== "running") {
+          if (task.state === "completed") {
+            adaptState.lastSourceResult = task.result;
+            var openSourcePath = task.result.projectModSourcePath || task.result.sourcePath;
+            await api("/api/open-folder", { method: "POST", body: { path: openSourcePath } });
+            if (selected) await saveAdaptProfile(task.result.unitId, false);
+            renderAdaptDetail(adaptState.target);
+            showModal("外部模组源码已准备", "源码目录:\n" + openSourcePath + (task.result.projectSourcePath ? "\n\n项目源码入口:\n" + task.result.projectSourcePath : "") + "\n\n报告:\n" + (task.result.reportPath || "无"));
+            notify("外部模组源码已准备", "success");
+          } else {
+            var taskLog = (task.logs || []).join("\n");
+            throw new Error((task.lastError || "源码准备失败") + (taskLog ? "\n\n" + taskLog : ""));
+          }
+          break;
+        }
+        await new Promise(function (resolve) { setTimeout(resolve, 900); });
+      }
+    } catch (e) {
+      showError("外部模组源码准备失败：" + (e as Error).message);
+      showModal("外部模组源码准备失败", (e as Error).message);
+    }
+  }
+
+  async function saveAdaptProfile(sourceUnitId?: string, notifyUser = true) {
+    if (!adaptState.target) return;
+    var selected = selectedAdaptVariant();
+    if (!selected) {
+      if (notifyUser) notify("请先绑定一个变体", "warning");
+      return;
+    }
+    var profile = await api("/api/variants/" + encodeURIComponent(selected.variant.id) + "/compat", {
+      method: "POST",
+      body: {
+        target: {
+          ...adaptState.target,
+          loader: (($("adapt-loader") as HTMLInputElement | null)?.value || adaptState.target.loader || selected.variant.loader),
+          minecraftVersion: (($("adapt-mc") as HTMLInputElement | null)?.value || adaptState.target.minecraftVersion || selected.variant.mcVersion),
+        },
+        sourceUnitId: sourceUnitId || adaptState.lastSourceResult?.unitId,
+        dependencySnippets: adaptState.target.dependencySnippets || [],
+      },
+    }) as any;
+    if (notifyUser) notify("适配档案已保存", "success");
+    return profile;
+  }
+
+  async function openAdaptSource() {
+    var result = adaptState.lastSourceResult;
+    if (!result) return;
+    if (result.projectModSourcePath) {
+      await api("/api/open-folder", { method: "POST", body: { path: result.projectModSourcePath } });
+      return;
+    }
+    await api("/api/mod-intel/sources/" + encodeURIComponent(result.unitId) + "/open", { method: "POST" });
+  }
+
+  async function openAdaptReport() {
+    var unitId = adaptState.lastSourceResult?.unitId;
+    if (!unitId) return;
+    var report = await api("/api/mod-intel/sources/" + encodeURIComponent(unitId) + "/report") as any;
+    showLogModal("外部模组 API 报告", report.content || "", { copyLabel: "复制报告" });
+  }
+
+  async function copyAdaptSnippet() {
+    var snippet = $("adapt-snippet")?.textContent || "";
+    if (!snippet.trim()) return;
+    await navigator.clipboard.writeText(snippet);
+    notify("依赖片段已复制", "success");
+  }
+
   async function refreshAllMetaFromSettings() {
     var btn = $("btn-settings-refresh-versions") as HTMLButtonElement | null;
     if (btn) btn.disabled = true;
@@ -2759,6 +3523,7 @@ export function bootWorkbench(): void {
       } else {
         showView(view);
         if (view === "settings") loadSettings();
+        if (view === "adapt") loadAdaptView();
         if (view === "external") loadExternalView();
         if (view === "list") loadMods(true);
       }
@@ -2773,6 +3538,77 @@ export function bootWorkbench(): void {
 
   $("btn-new-mod").addEventListener("click", function () {
     document.querySelector('.nav-btn[data-view="create"]').click();
+  });
+
+  $("btn-adapt-search")?.addEventListener("click", function () {
+    void searchAdaptMods(true);
+  });
+  $("adapt-query")?.addEventListener("keydown", function (event) {
+    if ((event as KeyboardEvent).key === "Enter") void searchAdaptMods(true);
+  });
+  $("adapt-mc")?.addEventListener("keydown", function (event) {
+    if ((event as KeyboardEvent).key === "Enter") {
+      renderAdaptFilters();
+      void searchAdaptMods(true);
+    }
+  });
+  $("adapt-mc")?.addEventListener("input", function () {
+    renderAdaptFilters();
+  });
+  $("adapt-show-all-versions")?.addEventListener("change", function () {
+    renderAdaptFilters();
+  });
+  $("adapt-source")?.addEventListener("change", function () { void searchAdaptMods(true); });
+  $("adapt-sort")?.addEventListener("change", function () { void searchAdaptMods(true); });
+  $("adapt-limit")?.addEventListener("change", function () { void searchAdaptMods(true); });
+  $("view-adapt")?.addEventListener("click", function (event) {
+    var target = event.target as HTMLElement;
+    var button = target.closest<HTMLElement>("[data-adapt-mc], [data-adapt-loader], [data-adapt-category], [data-adapt-clear]");
+    if (!button) return;
+    if (button.dataset.adaptMc !== undefined) {
+      var mc = $("adapt-mc") as HTMLInputElement | null;
+      if (mc) mc.value = button.dataset.adaptMc || "";
+    } else if (button.dataset.adaptLoader !== undefined) {
+      var loader = $("adapt-loader") as HTMLInputElement | null;
+      if (loader) loader.value = button.dataset.adaptLoader || "";
+    } else if (button.dataset.adaptCategory !== undefined) {
+      adaptState.category = button.dataset.adaptCategory || "";
+      var category = $("adapt-category") as HTMLInputElement | null;
+      if (category) category.value = adaptState.category;
+    } else if (button.dataset.adaptClear === "mc") {
+      var mcInput = $("adapt-mc") as HTMLInputElement | null;
+      if (mcInput) mcInput.value = "";
+    } else if (button.dataset.adaptClear === "loader") {
+      var loaderInput = $("adapt-loader") as HTMLInputElement | null;
+      if (loaderInput) loaderInput.value = "";
+    } else if (button.dataset.adaptClear === "category") {
+      adaptState.category = "";
+      var categoryInput = $("adapt-category") as HTMLInputElement | null;
+      if (categoryInput) categoryInput.value = "";
+    }
+    renderAdaptFilters();
+    void searchAdaptMods(true);
+  });
+  $("btn-adapt-refresh")?.addEventListener("click", function () {
+    void loadMods(true).then(function () {
+      renderAdaptVariantSelect();
+      if (adaptState.results.length) void searchAdaptMods(false);
+    });
+  });
+  $("adapt-prev")?.addEventListener("click", function () {
+    adaptState.offset = Math.max(0, adaptState.offset - adaptState.limit);
+    void searchAdaptMods(false);
+  });
+  $("adapt-next")?.addEventListener("click", function () {
+    if (adaptState.offset + adaptState.limit >= adaptState.totalHits) return;
+    adaptState.offset += adaptState.limit;
+    void searchAdaptMods(false);
+  });
+  $("adapt-variant-select")?.addEventListener("change", function () {
+    adaptState.variantId = (($("adapt-variant-select") as HTMLSelectElement | null)?.value || "");
+    applyAdaptVariantToFilters();
+    renderAdaptFilters();
+    void searchAdaptMods(true);
   });
 
   $("btn-scan").addEventListener("click", async function () {

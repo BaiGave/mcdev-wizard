@@ -66,10 +66,29 @@ export function getProjectSourceRoot(projectPath: string): string {
   return path.join(path.resolve(projectPath), ".dmcl", "sources");
 }
 
+function containsJavaSource(root: string): boolean {
+  const pending = [root];
+  while (pending.length > 0) {
+    const dir = pending.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.toLowerCase().endsWith(".java")) return true;
+      if (entry.isDirectory()) pending.push(path.join(dir, entry.name));
+    }
+  }
+  return false;
+}
+
 export function sourceUnitReady(unitDir: string): boolean {
+  const sourceDir = path.join(unitDir, "src");
   return fs.existsSync(path.join(unitDir, "READY"))
     && fs.existsSync(path.join(unitDir, "manifest.json"))
-    && fs.existsSync(path.join(unitDir, "src"));
+    && containsJavaSource(sourceDir);
 }
 
 function readEntry(unitDir: string): MinecraftSourceEntry | null {

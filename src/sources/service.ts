@@ -29,6 +29,7 @@ import type {
   ModSourceEntry,
   ProjectSourceIndex,
   ProjectSourceStatus,
+  RuntimeModSourceCandidate,
   SourceArtifactRecord,
   SourceCenterStatus,
   SourceTarget,
@@ -305,7 +306,7 @@ export function findMappedMinecraftJar(
   return findProjectMappedJar(projectPath, loader, mcVersion);
 }
 
-async function sha256File(file: string): Promise<string> {
+export async function sha256File(file: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = createHash("sha256");
     const stream = fs.createReadStream(file);
@@ -327,7 +328,7 @@ function safeArchiveDestination(root: string, entryName: string): string | null 
   return target;
 }
 
-async function extractJavaSources(archive: string, srcDir: string): Promise<number> {
+export async function extractJavaSources(archive: string, srcDir: string): Promise<number> {
   const zip = new AdmZip(archive);
   let written = 0;
   for (const entry of zip.getEntries()) {
@@ -343,6 +344,61 @@ async function extractJavaSources(archive: string, srcDir: string): Promise<numb
 
 function countJavaFiles(root: string): number {
   return collectFiles(root, (file) => file.toLowerCase().endsWith(".java")).length;
+}
+
+function resolveUnitArtifact(unitDir: string, relativePath: string): string | null {
+  const root = path.resolve(unitDir);
+  const artifact = path.resolve(root, relativePath);
+  const norm = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
+  if (norm(artifact) === norm(root) || !norm(artifact).startsWith(norm(root) + path.sep)) return null;
+  return artifact;
+}
+
+async function repairMinecraftSourceUnit(unitDir: string, log?: Logger): Promise<boolean> {
+  if (sourceUnitReady(unitDir)) return true;
+  const manifestFile = path.join(unitDir, "manifest.json");
+  if (!fs.existsSync(path.join(unitDir, "READY")) || !fs.existsSync(manifestFile)) return false;
+
+  let manifest: MinecraftSourceManifest;
+  try {
+    manifest = JSON.parse(await fs.promises.readFile(manifestFile, "utf8")) as MinecraftSourceManifest;
+  } catch {
+    return false;
+  }
+  if (manifest.schema !== 1 || !Array.isArray(manifest.artifacts)) return false;
+
+  const sourceArchives = manifest.artifacts.filter((artifact) =>
+    artifact.role.toLowerCase().includes("source") && artifact.path.toLowerCase().endsWith(".jar"),
+  );
+  for (const record of sourceArchives) {
+    const archive = resolveUnitArtifact(unitDir, record.path);
+    if (!archive || !fs.existsSync(archive) || !isMinecraftSourceArchive(archive)) continue;
+    if (record.sha256 && await sha256File(archive) !== record.sha256) {
+      log?.(`缓存源码包校验失败，已忽略：${path.basename(archive)}`);
+      continue;
+    }
+
+    const repairRoot = `${unitDir}.repair-${randomUUID()}`;
+    const repairSrc = path.join(repairRoot, "src");
+    try {
+      await fs.promises.mkdir(repairSrc, { recursive: true });
+      const javaFiles = await extractJavaSources(archive, repairSrc);
+      if (javaFiles < MIN_MINECRAFT_JAVA_FILES || !fs.existsSync(path.join(repairSrc, "net", "minecraft"))) {
+        continue;
+      }
+
+      const finalSrc = path.join(unitDir, manifest.relativeSourcePath ?? "src");
+      await fs.promises.rm(finalSrc, { recursive: true, force: true });
+      await fs.promises.rename(repairSrc, finalSrc);
+      manifest.javaFiles = javaFiles;
+      await fs.promises.writeFile(manifestFile, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+      log?.(`已从缓存源码包恢复 ${javaFiles} 个 Java 文件`);
+      return sourceUnitReady(unitDir);
+    } finally {
+      await fs.promises.rm(repairRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+  return false;
 }
 
 function countReadySourceUnits(root: string, depth = 0): number {
@@ -469,6 +525,112 @@ async function copyArtifact(file: string, role: string, artifactDir: string): Pr
   };
 }
 
+function readableModSourcePath(sourceKind: ModSourceEntry["sourceKind"]): "source-code" | "decompiled-code" {
+  return sourceKind === "cfr-decompile" ? "decompiled-code" : "source-code";
+}
+
+function modSourceLayout(
+  sourceKind: ModSourceEntry["sourceKind"],
+  sourceArchiveRetained = false,
+): NonNullable<ModSourceEntry["layout"]> {
+  return {
+    stableSourcePath: "src",
+    readableSourcePath: readableModSourcePath(sourceKind),
+    sourceArchiveRetained,
+  };
+}
+
+function isRetainedSourceArchiveArtifact(record: SourceArtifactRecord): boolean {
+  if (record.role === "github-source" || record.role === "mod-sources" || record.role === "manual-source") {
+    return true;
+  }
+  const name = path.basename(record.path).toLowerCase();
+  return (name.endsWith(".zip") || name.endsWith(".jar")) && name.includes("source")
+    && record.role !== "mod-original";
+}
+
+async function pruneLooseSourceArchiveArtifacts(unitDir: string): Promise<boolean> {
+  const artifactDir = path.join(unitDir, "artifacts");
+  if (!fs.existsSync(artifactDir)) return false;
+  let changed = false;
+  for (const item of await fs.promises.readdir(artifactDir, { withFileTypes: true })) {
+    if (!item.isFile()) continue;
+    const name = item.name.toLowerCase();
+    if ((name.endsWith(".zip") || name.endsWith(".jar")) && name.includes("source") && name !== "mod-original.jar") {
+      await fs.promises.rm(path.join(artifactDir, item.name), { force: true }).catch(() => {});
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+async function writeModSourceLayoutReadme(
+  unitDir: string,
+  entry: Pick<ModSourceEntry, "sourceKind" | "layout">,
+): Promise<void> {
+  const readablePath = entry.layout?.readableSourcePath ?? readableModSourcePath(entry.sourceKind);
+  const sourceDescription = entry.sourceKind === "cfr-decompile"
+    ? "decompiled Java generated from artifacts/mod-original.jar by CFR"
+    : "extracted upstream source code";
+  const archivePolicy = entry.layout?.sourceArchiveRetained
+    ? "A source archive is retained in artifacts/."
+    : "Source archives are extracted and then removed from this unit.";
+  const lines = [
+    "# DMCL Mod Source Unit",
+    "",
+    `- Open \`${readablePath}/\` for ${sourceDescription}.`,
+    "- `src/` is the stable compatibility path used by DMCL and project projections.",
+    "- `artifacts/mod-original.jar` is kept for hash verification and reproducibility.",
+    `- ${archivePolicy}`,
+    "",
+  ];
+  await fs.promises.writeFile(path.join(unitDir, "README.md"), lines.join("\n"), "utf8");
+}
+
+async function ensureReadableModSourceLayout(unitDir: string, entry: ModSourceEntry): Promise<ModSourceEntry> {
+  const layout = entry.layout ?? modSourceLayout(entry.sourceKind);
+  const readablePath = layout.readableSourcePath;
+  const stalePath = readablePath === "source-code" ? "decompiled-code" : "source-code";
+  await fs.promises.rm(path.join(unitDir, stalePath), { recursive: true, force: true }).catch(() => {});
+  await projectSourceLink(path.join(unitDir, "src"), path.join(unitDir, readablePath));
+  await writeModSourceLayoutReadme(unitDir, { sourceKind: entry.sourceKind, layout });
+  return { ...entry, layout };
+}
+
+async function normalizeModSourceUnitLayout(unitDir: string, entry: ModSourceEntry): Promise<ModSourceEntry> {
+  const artifacts = entry.artifacts ?? [];
+  const retainedArtifacts: SourceArtifactRecord[] = [];
+  let changed = entry.layout?.sourceArchiveRetained !== false
+    || entry.layout?.readableSourcePath !== readableModSourcePath(entry.sourceKind)
+    || entry.sourcePath !== path.join(unitDir, "src")
+    || entry.path !== unitDir;
+  for (const artifact of artifacts) {
+    if (isRetainedSourceArchiveArtifact(artifact)) {
+      changed = true;
+      await fs.promises.rm(path.join(unitDir, artifact.path), { force: true }).catch(() => {});
+    } else {
+      retainedArtifacts.push(artifact);
+    }
+  }
+  if (await pruneLooseSourceArchiveArtifacts(unitDir)) changed = true;
+  const normalized: ModSourceEntry = {
+    ...entry,
+    path: unitDir,
+    sourcePath: path.join(unitDir, "src"),
+    artifacts: retainedArtifacts,
+    layout: modSourceLayout(entry.sourceKind, false),
+  };
+  await ensureReadableModSourceLayout(unitDir, normalized);
+  if (changed) {
+    await fs.promises.writeFile(
+      path.join(unitDir, "manifest.json"),
+      JSON.stringify(normalized, null, 2) + "\n",
+      "utf8",
+    );
+  }
+  return normalized;
+}
+
 async function commitStaging(staging: string, finalDir: string): Promise<void> {
   const previous = `${finalDir}.previous-${randomUUID()}`;
   await fs.promises.mkdir(path.dirname(finalDir), { recursive: true });
@@ -499,9 +661,8 @@ async function commitStaging(staging: string, finalDir: string): Promise<void> {
     }
     await fs.promises.rm(previous, { recursive: true, force: true }).catch(() => {});
   } catch (err) {
-    if (fs.existsSync(previous) && !fs.existsSync(finalDir)) {
-      await fs.promises.rename(previous, finalDir).catch(() => {});
-    }
+    await fs.promises.rm(finalDir, { recursive: true, force: true });
+    if (fs.existsSync(previous)) await fs.promises.rename(previous, finalDir);
     throw err;
   }
 }
@@ -510,9 +671,12 @@ export async function materializeMinecraftSourcesFromProject(
   options: MaterializeOptions,
 ): Promise<MinecraftSourceEntry> {
   const finalDir = getMinecraftSourceUnitDir(options.loader, options.mcVersion, options.mapping);
-  if (!options.force && sourceUnitReady(finalDir)) {
-    const cached = listMinecraftSourceEntries().find((entry) => entry.path === finalDir);
-    if (cached) return cached;
+  if (!options.force) {
+    const ready = sourceUnitReady(finalDir) || await repairMinecraftSourceUnit(finalDir, options.log);
+    if (ready) {
+      const cached = listMinecraftSourceEntries().find((entry) => entry.path === finalDir);
+      if (cached) return cached;
+    }
   }
 
   const staging = `${finalDir}.partial-${randomUUID()}`;
@@ -612,13 +776,23 @@ interface ResolvedModDependency {
   modVersion: string;
 }
 
+function isLoaderPlatformDependency(group: string, name: string, modId: string): boolean {
+  const normalizedGroup = group.toLowerCase();
+  const normalizedName = name.toLowerCase();
+  const normalizedModId = modId.toLowerCase();
+  if (normalizedGroup === "net.fabricmc" && normalizedName === "fabric-loader") return true;
+  if (normalizedGroup.startsWith("net.fabricmc.fabric-api")) return true;
+  if (normalizedGroup.startsWith("net.neoforged") || normalizedGroup.startsWith("net.minecraftforge")) return true;
+  return ["minecraft", "fabricloader", "forge", "neoforge", "java"].includes(normalizedModId);
+}
+
 function zipText(zip: AdmZip, entryName: string): string | null {
   const entry = zip.getEntry(entryName);
   if (!entry || entry.isDirectory) return null;
   try { return entry.getData().toString("utf8"); } catch { return null; }
 }
 
-function detectModMetadata(file: string, fallbackName: string, fallbackVersion: string): {
+export function detectModMetadata(file: string, fallbackName: string, fallbackVersion: string): {
   modId: string;
   modName: string;
   modVersion: string;
@@ -666,6 +840,172 @@ function detectModMetadata(file: string, fallbackName: string, fallbackVersion: 
   return null;
 }
 
+export function detectModLicense(file: string): NonNullable<ModSourceEntry["license"]> {
+  try {
+    const zip = new AdmZip(file);
+    const fabric = zipText(zip, "fabric.mod.json");
+    if (fabric) {
+      const parsed = JSON.parse(fabric) as { license?: string | string[] };
+      if (typeof parsed.license === "string" && parsed.license.trim()) {
+        return { id: parsed.license.trim(), source: "jar" };
+      }
+      if (Array.isArray(parsed.license) && parsed.license.length > 0) {
+        return { id: parsed.license.join(", "), source: "jar" };
+      }
+    }
+
+    const toml = zipText(zip, "META-INF/neoforge.mods.toml")
+      ?? zipText(zip, "META-INF/mods.toml");
+    if (toml) {
+      const license = /\blicense\s*=\s*["']([^"']+)["']/.exec(toml)?.[1];
+      if (license) return { id: license, source: "jar" };
+    }
+
+    const licenseEntry = zip.getEntries().find((entry) => {
+      const base = path.basename(entry.entryName).toLowerCase();
+      return !entry.isDirectory && (base === "license" || base.startsWith("license.") || base === "copying");
+    });
+    if (licenseEntry) return { name: path.basename(licenseEntry.entryName), source: "jar" };
+  } catch { /* best effort */ }
+  return { source: "unknown" };
+}
+
+interface JavaSourceSummary {
+  packages: string[];
+  topLevelTypes: Array<{
+    packageName: string;
+    name: string;
+    kind: string;
+    public: boolean;
+    path: string;
+  }>;
+}
+
+function summarizeJavaSources(srcDir: string, unitDir: string): JavaSourceSummary {
+  const packages = new Set<string>();
+  const topLevelTypes: JavaSourceSummary["topLevelTypes"] = [];
+  const javaFiles = collectFiles(srcDir, (file) => file.toLowerCase().endsWith(".java"));
+  for (const file of javaFiles) {
+    let content = "";
+    try {
+      content = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    const packageName = /^\s*package\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;/m.exec(content)?.[1] ?? "";
+    if (packageName) packages.add(packageName);
+    const type = /\b(public\s+)?(class|interface|enum|record|@interface)\s+([A-Za-z_$][\w$]*)/.exec(content);
+    if (type) {
+      topLevelTypes.push({
+        packageName,
+        kind: type[2],
+        name: type[3],
+        public: !!type[1],
+        path: path.relative(unitDir, file).replace(/\\/g, "/"),
+      });
+    }
+  }
+  return {
+    packages: [...packages].sort(),
+    topLevelTypes: topLevelTypes.sort((a, b) => {
+      const byPackage = a.packageName.localeCompare(b.packageName);
+      if (byPackage !== 0) return byPackage;
+      return a.name.localeCompare(b.name);
+    }),
+  };
+}
+
+function modSourceOrigin(dep: ResolvedModDependency): NonNullable<ModSourceEntry["origin"]> {
+  return {
+    provider: dep.group === "local" ? "local" : "gradle",
+    group: dep.group,
+    name: dep.name,
+    version: dep.version,
+    file: dep.file,
+  };
+}
+
+async function writeModSourceIndex(
+  unitDir: string,
+  srcDir: string,
+  entry: ModSourceEntry,
+  dep?: Pick<ResolvedModDependency, "group" | "name" | "version">,
+): Promise<string> {
+  const indexDir = path.join(unitDir, "index");
+  await fs.promises.mkdir(indexDir, { recursive: true });
+  const summary = summarizeJavaSources(srcDir, unitDir);
+  const metadata = {
+    schema: 1,
+    generatedAt: entry.generatedAt,
+    mod: {
+      modId: entry.modId,
+      modName: entry.modName,
+      modVersion: entry.modVersion,
+      loader: entry.loader,
+      minecraftVersion: entry.minecraftVersion,
+    },
+    source: {
+      sourceKind: entry.sourceKind,
+      confidence: entry.confidence,
+      javaFiles: entry.javaFiles,
+      license: entry.license,
+      layout: entry.layout,
+    },
+    artifact: entry.artifact,
+    origin: entry.origin,
+    dependency: dep
+      ? {
+        group: dep.group,
+        name: dep.name,
+        version: dep.version,
+      }
+      : undefined,
+    packages: summary.packages,
+    topLevelTypes: summary.topLevelTypes,
+  };
+  await fs.promises.writeFile(
+    path.join(indexDir, "metadata.json"),
+    JSON.stringify(metadata, null, 2) + "\n",
+    "utf8",
+  );
+
+  const publicTypes = summary.topLevelTypes.filter((item) => item.public).slice(0, 40);
+  const allTypes = summary.topLevelTypes.slice(0, 40);
+  const typeLines = (publicTypes.length > 0 ? publicTypes : allTypes)
+    .map((item) => `- \`${item.packageName ? `${item.packageName}.` : ""}${item.name}\` (${item.kind}) - \`${item.path}\``);
+  const report = [
+    `# ${entry.modName} (${entry.modId})`,
+    "",
+    `- Version: \`${entry.modVersion}\``,
+    `- Loader: \`${entry.loader}\``,
+    `- Minecraft: \`${entry.minecraftVersion}\``,
+    `- Source: \`${entry.sourceKind}\` (${entry.confidence ?? "unknown"} confidence)`,
+    `- Source directory: \`${entry.layout?.readableSourcePath ?? readableModSourcePath(entry.sourceKind)}/\``,
+    `- Artifact SHA-256: \`${entry.artifactSha256}\``,
+    `- Origin: \`${entry.origin?.provider ?? "unknown"}\``,
+    `- License: \`${entry.license?.id ?? entry.license?.name ?? "unknown"}\``,
+    `- Java files: ${entry.javaFiles}`,
+    "",
+    "## API Surface Preview",
+    "",
+    typeLines.length > 0
+      ? typeLines.join("\n")
+      : "No top-level Java types were detected.",
+    "",
+    "## Notes",
+    "",
+    entry.sourceKind === "cfr-decompile"
+      ? "This source was produced by CFR from the resolved mod jar. Use `decompiled-code/` as a read-only compatibility reference."
+      : entry.sourceKind === "github-source"
+        ? "This source was extracted from a GitHub source archive into `source-code/`; the archive is not retained after extraction."
+        : "This source was extracted into `source-code/`; the source archive is not retained after extraction.",
+    "",
+  ].join("\n");
+  const reportPath = path.join(indexDir, "api-report.md");
+  await fs.promises.writeFile(reportPath, report, "utf8");
+  return path.relative(unitDir, reportPath).replace(/\\/g, "/");
+}
+
 function dependencyResolverScript(): string {
   return `gradle.projectsEvaluated {
     def root = gradle.rootProject
@@ -694,12 +1034,49 @@ function dependencyResolverScript(): string {
 `;
 }
 
+function runtimeModRoots(projectPath: string): string[] {
+  return [
+    path.join(projectPath, "run", "mods"),
+    path.join(projectPath, "mods"),
+    path.join(projectPath, "runs", "client", "mods"),
+  ];
+}
+
+function collectRuntimeModFiles(projectPath: string, selectedPaths?: string[]): string[] {
+  const files = selectedPaths?.length
+    ? selectedPaths.map((file) => path.resolve(file))
+    : runtimeModRoots(projectPath).flatMap((root) => collectFiles(root, (file) => file.toLowerCase().endsWith(".jar")));
+  return [...new Set(files)].filter((file) => fs.existsSync(file) && file.toLowerCase().endsWith(".jar"));
+}
+
+function resolveSelectedRuntimeMods(projectPath: string, selectedPaths?: string[]): ResolvedModDependency[] {
+  const resolved: ResolvedModDependency[] = [];
+  const seen = new Set<string>();
+  for (const file of collectRuntimeModFiles(projectPath, selectedPaths)) {
+    if (seen.has(file) || !zipHasEntry(file, (entry) => entry.endsWith(".class"))) continue;
+    const fallback = path.basename(file, path.extname(file));
+    const metadata = detectModMetadata(file, fallback, "local");
+    if (!metadata || ["minecraft", "fabricloader", "forge", "neoforge", "java"].includes(metadata.modId.toLowerCase())) continue;
+    seen.add(file);
+    resolved.push({ group: "local", name: fallback, version: metadata.modVersion, file, ...metadata });
+  }
+  const unique = new Map<string, ResolvedModDependency>();
+  for (const dependency of resolved) unique.set(`${dependency.modId}:${dependency.modVersion}`, dependency);
+  return [...unique.values()];
+}
+
 async function resolveModDependencies(
   projectPath: string,
   options: Pick<MaterializeOptions, "isCancelled" | "onProcess" | "log"> & {
     onDependencyProgress?: (found: number, prepared: number, failures: number) => void;
+    runtimeModPaths?: string[];
+    includeGradleDependencies?: boolean;
+    includeRuntimeMods?: boolean;
   },
 ): Promise<ResolvedModDependency[]> {
+  if (options.includeGradleDependencies === false) {
+    return resolveSelectedRuntimeMods(projectPath, options.runtimeModPaths);
+  }
   const dmclDir = path.join(projectPath, ".dmcl");
   const script = path.join(dmclDir, "source-resolver.gradle");
   await fs.promises.mkdir(dmclDir, { recursive: true });
@@ -726,7 +1103,7 @@ async function resolveModDependencies(
       if (!zipHasEntry(file, (entry) => entry.endsWith(".class"))) return;
       const metadata = detectModMetadata(file, parts[2], parts[3]);
       if (!metadata) return;
-      if (["minecraft", "fabricloader", "forge", "neoforge", "java"].includes(metadata.modId.toLowerCase())) return;
+      if (isLoaderPlatformDependency(parts[1], parts[2], metadata.modId)) return;
       seen.add(file);
       resolved.push({
         group: parts[1],
@@ -740,13 +1117,13 @@ async function resolveModDependencies(
     {
       isCancelled: options.isCancelled,
       onProc: options.onProcess,
-      env: { GRADLE_USER_HOME: getSourceGradleHome() },
-      timeoutMs: 10 * 60 * 1000,
+      env: buildGradleEnv(projectPath),
+      timeoutMs: 90 * 1000,
     },
   ).finally(() => clearInterval(heartbeat));
-  if (code === 124) options.log?.("Gradle 解析前置模组超过 10 分钟，已停止等待；将保留 Minecraft 源码并继续扫描本地 mods");
+  if (code === 124) options.log?.("Gradle 依赖解析超过 90 秒，已停止等待；项目源码入口不受影响");
   if (code !== 0) options.log?.(`依赖源码解析未完成（Gradle 退出码 ${code}），将仅准备 Minecraft 源码`);
-  const localModRoots = [
+  const localModRoots = options.includeRuntimeMods === false ? [] : [
     path.join(projectPath, "mods"),
     path.join(projectPath, "run", "mods"),
     path.join(projectPath, "runs", "client", "mods"),
@@ -791,10 +1168,63 @@ function readModSourceEntry(unitDir: string): ModSourceEntry | null {
     if (!sourceUnitReady(unitDir)) return null;
     const manifest = JSON.parse(fs.readFileSync(path.join(unitDir, "manifest.json"), "utf8")) as ModSourceEntry;
     if (!manifest.modId || manifest.javaFiles < 1) return null;
-    return { ...manifest, path: unitDir, sourcePath: path.join(unitDir, "src") };
+    return {
+      ...manifest,
+      path: unitDir,
+      sourcePath: path.join(unitDir, "src"),
+      layout: manifest.layout ?? modSourceLayout(manifest.sourceKind),
+    };
   } catch {
     return null;
   }
+}
+
+export async function listProjectRuntimeMods(
+  projectPath: string,
+  loader: LoaderId,
+  minecraftVersion: string,
+): Promise<RuntimeModSourceCandidate[]> {
+  const candidates: RuntimeModSourceCandidate[] = [];
+  const runModsRoot = path.join(projectPath, "run", "mods");
+  for (const file of collectFiles(runModsRoot, (candidate) => candidate.toLowerCase().endsWith(".jar"))) {
+    const fallback = path.basename(file, path.extname(file));
+    const metadata = detectModMetadata(file, fallback, "local");
+    if (!metadata || !zipHasEntry(file, (entry) => entry.endsWith(".class"))) {
+      candidates.push({
+        file,
+        relativePath: path.relative(projectPath, file),
+        supported: false,
+      });
+      continue;
+    }
+    const artifactSha256 = await sha256File(file);
+    const cached = readModSourceEntry(getModSourceUnitDir(
+      loader,
+      minecraftVersion,
+      metadata.modId,
+      metadata.modVersion,
+      artifactSha256,
+    ));
+    const readableFolder = cached?.layout?.readableSourcePath
+      ?? (cached?.sourceKind === "cfr-decompile" ? "decompiled-code" : "source-code");
+    candidates.push({
+      file,
+      relativePath: path.relative(projectPath, file),
+      modId: metadata.modId,
+      modName: metadata.modName,
+      modVersion: metadata.modVersion,
+      artifactSha256,
+      supported: true,
+      source: cached ? {
+        ready: true,
+        sourceKind: cached.sourceKind,
+        confidence: cached.confidence,
+        sourcePath: path.join(cached.path, readableFolder),
+        javaFiles: cached.javaFiles,
+      } : { ready: false },
+    });
+  }
+  return candidates.sort((a, b) => (a.modName ?? path.basename(a.file)).localeCompare(b.modName ?? path.basename(b.file)));
 }
 
 async function materializeModSource(
@@ -813,7 +1243,7 @@ async function materializeModSource(
     artifactSha256,
   );
   const cached = !force ? readModSourceEntry(finalDir) : null;
-  if (cached) return cached;
+  if (cached) return await normalizeModSourceUnitLayout(finalDir, cached);
 
   const staging = `${finalDir}.partial-${randomUUID()}`;
   const srcDir = path.join(staging, "src");
@@ -823,17 +1253,20 @@ async function materializeModSource(
   try {
     const sourcesArchive = findDependencySourcesArchive(dep);
     let sourceKind: ModSourceEntry["sourceKind"];
+    const artifactRecords: SourceArtifactRecord[] = [];
     if (sourcesArchive) {
       sourceKind = "sources-jar";
       await extractJavaSources(sourcesArchive, srcDir);
-      await copyArtifact(sourcesArchive, "mod-sources", artifactDir);
     } else {
       sourceKind = "cfr-decompile";
       await runCfr(projectPath, dep.file, srcDir, options);
     }
-    await copyArtifact(dep.file, "mod-original", artifactDir);
+    const originalArtifact = await copyArtifact(dep.file, "mod-original", artifactDir);
+    artifactRecords.push(originalArtifact);
     const javaFiles = countJavaFiles(srcDir);
     if (javaFiles < 1) throw new Error(`${dep.modId} 未生成可读 Java 源码`);
+    const generatedAt = new Date().toISOString();
+    const artifactStat = await fs.promises.stat(dep.file);
     const entry: ModSourceEntry = {
       loader: target.loader,
       minecraftVersion: target.mcVersion,
@@ -842,14 +1275,141 @@ async function materializeModSource(
       modVersion: dep.modVersion,
       artifactSha256,
       sourceKind,
+      origin: modSourceOrigin(dep),
+      artifact: {
+        path: originalArtifact.path,
+        sha256: artifactSha256,
+        size: artifactStat.size,
+        maven: dep.group === "local"
+          ? undefined
+          : { group: dep.group, name: dep.name, version: dep.version },
+      },
+      confidence: sourceKind === "sources-jar" ? "high" : "medium",
+      license: detectModLicense(dep.file),
+      artifacts: artifactRecords,
+      layout: modSourceLayout(sourceKind, false),
       javaFiles,
+      generatedAt,
       path: finalDir,
       sourcePath: path.join(finalDir, "src"),
     };
+    entry.reportPath = await writeModSourceIndex(staging, srcDir, entry, dep);
     await fs.promises.writeFile(path.join(staging, "manifest.json"), JSON.stringify(entry, null, 2) + "\n", "utf8");
-    await fs.promises.writeFile(path.join(staging, "READY"), `${new Date().toISOString()}\n`, "utf8");
+    await fs.promises.writeFile(path.join(staging, "READY"), `${generatedAt}\n`, "utf8");
     await commitStaging(staging, finalDir);
-    return entry;
+    return await ensureReadableModSourceLayout(finalDir, entry);
+  } catch (err) {
+    await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
+}
+
+type ExternalSourceArchiveKind = Extract<
+  ModSourceEntry["sourceKind"],
+  "sources-jar" | "github-source" | "manual-source"
+>;
+
+export interface ExternalModSourceMaterializeOptions {
+  loader: LoaderId;
+  minecraftVersion: string;
+  projectPath?: string;
+  modId: string;
+  modName: string;
+  modVersion: string;
+  artifactFile: string;
+  sourceArchiveFile?: string;
+  sourceArchiveKind?: ExternalSourceArchiveKind;
+  origin?: ModSourceEntry["origin"];
+  license?: ModSourceEntry["license"];
+  confidence?: ModSourceEntry["confidence"];
+  force?: boolean;
+  isCancelled?: () => boolean;
+  onProcess?: (proc: ChildProcess, isWin: boolean) => void;
+  log?: Logger;
+}
+
+export async function materializeExternalModSource(
+  options: ExternalModSourceMaterializeOptions,
+): Promise<ModSourceEntry> {
+  const artifactSha256 = await sha256File(options.artifactFile);
+  const finalDir = getModSourceUnitDir(
+    options.loader,
+    options.minecraftVersion,
+    options.modId,
+    options.modVersion,
+    artifactSha256,
+  );
+  const cached = !options.force ? readModSourceEntry(finalDir) : null;
+  if (cached) return await normalizeModSourceUnitLayout(finalDir, cached);
+
+  const staging = `${finalDir}.partial-${randomUUID()}`;
+  const srcDir = path.join(staging, "src");
+  const artifactDir = path.join(staging, "artifacts");
+  await fs.promises.rm(staging, { recursive: true, force: true });
+  await fs.promises.mkdir(srcDir, { recursive: true });
+
+  try {
+    const artifactRecords: SourceArtifactRecord[] = [];
+    let sourceKind: ModSourceEntry["sourceKind"];
+    if (options.sourceArchiveFile) {
+      sourceKind = options.sourceArchiveKind ?? "sources-jar";
+      await extractJavaSources(options.sourceArchiveFile, srcDir);
+    } else {
+      sourceKind = "cfr-decompile";
+      await runCfr(
+        options.projectPath && fs.existsSync(options.projectPath) ? options.projectPath : process.cwd(),
+        options.artifactFile,
+        srcDir,
+        options,
+      );
+    }
+
+    const originalArtifact = await copyArtifact(options.artifactFile, "mod-original", artifactDir);
+    artifactRecords.push(originalArtifact);
+    const javaFiles = countJavaFiles(srcDir);
+    if (javaFiles < 1) throw new Error(`${options.modId} did not produce readable Java sources`);
+    const generatedAt = new Date().toISOString();
+    const artifactStat = await fs.promises.stat(options.artifactFile);
+    const origin = options.origin ?? {
+      provider: "manual" as const,
+      file: options.artifactFile,
+    };
+    const entry: ModSourceEntry = {
+      loader: options.loader,
+      minecraftVersion: options.minecraftVersion,
+      modId: options.modId,
+      modName: options.modName,
+      modVersion: options.modVersion,
+      artifactSha256,
+      sourceKind,
+      origin,
+      artifact: {
+        path: originalArtifact.path,
+        sha256: artifactSha256,
+        size: artifactStat.size,
+        maven: origin.provider === "gradle" && origin.group && origin.name && origin.version
+          ? { group: origin.group, name: origin.name, version: origin.version }
+          : undefined,
+      },
+      confidence: options.confidence
+        ?? (sourceKind === "cfr-decompile" ? "medium" : "high"),
+      license: options.license ?? detectModLicense(options.artifactFile),
+      decompiler: sourceKind === "cfr-decompile" ? { name: "CFR", version: CFR_VERSION } : undefined,
+      artifacts: artifactRecords,
+      layout: modSourceLayout(sourceKind, false),
+      javaFiles,
+      generatedAt,
+      path: finalDir,
+      sourcePath: path.join(finalDir, "src"),
+    };
+    const dependency = origin.group && origin.name && origin.version
+      ? { group: origin.group, name: origin.name, version: origin.version }
+      : undefined;
+    entry.reportPath = await writeModSourceIndex(staging, srcDir, entry, dependency);
+    await fs.promises.writeFile(path.join(staging, "manifest.json"), JSON.stringify(entry, null, 2) + "\n", "utf8");
+    await fs.promises.writeFile(path.join(staging, "READY"), `${generatedAt}\n`, "utf8");
+    await commitStaging(staging, finalDir);
+    return await ensureReadableModSourceLayout(finalDir, entry);
   } catch (err) {
     await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
     throw err;
@@ -865,6 +1425,10 @@ async function ensureProjectGitExclude(projectPath: string): Promise<void> {
     if (pointer) localGitDir = path.resolve(projectPath, pointer);
   }
   if (localGitDir) {
+    const commonDirFile = path.join(localGitDir, "commondir");
+    if (fs.existsSync(commonDirFile)) {
+      localGitDir = path.resolve(localGitDir, (await fs.promises.readFile(commonDirFile, "utf8")).trim());
+    }
     const exclude = path.join(localGitDir, "info", "exclude");
     await fs.promises.mkdir(path.dirname(exclude), { recursive: true });
     const current = fs.existsSync(exclude) ? await fs.promises.readFile(exclude, "utf8") : "";
@@ -892,21 +1456,103 @@ async function projectSourceLink(target: string, linkPath: string): Promise<"lin
   }
 }
 
+function readableProjectModFolder(mod: ModSourceEntry): "source-code" | "decompiled-code" {
+  return mod.layout?.readableSourcePath
+    ?? (mod.sourceKind === "cfr-decompile" ? "decompiled-code" : "source-code");
+}
+
+async function projectModSourceLink(root: string, mod: ModSourceEntry): Promise<void> {
+  const projectedModRoot = path.join(root, "mods", safeSourceSegment(mod.modId), safeSourceSegment(mod.modVersion));
+  const readableFolder = readableProjectModFolder(mod);
+  await projectSourceLink(mod.sourcePath, path.join(projectedModRoot, "src"));
+  await projectSourceLink(mod.sourcePath, path.join(projectedModRoot, readableFolder));
+  const indexPath = path.join(mod.path, "index");
+  if (fs.existsSync(indexPath)) await projectSourceLink(indexPath, path.join(projectedModRoot, "index"));
+  const sourceNote = [
+    `# ${mod.modName} (${mod.modId})`,
+    "",
+    `- Version: \`${mod.modVersion}\``,
+    `- Source kind: \`${mod.sourceKind}\``,
+    `- Confidence: \`${mod.confidence ?? "unknown"}\``,
+    `- Readable source directory: \`${readableFolder}/\``,
+    "",
+    "`src/` is DMCL's stable path. The named directory above states whether this is upstream source code or CFR decompiled code.",
+  ].join("\n") + "\n";
+  await fs.promises.writeFile(path.join(projectedModRoot, "SOURCE.md"), sourceNote, "utf8");
+}
+
+async function writeProjectSourceReadme(root: string): Promise<void> {
+  await fs.promises.writeFile(
+    path.join(root, "README.md"),
+    [
+      "# DMCL Development Sources",
+      "",
+      "This directory is generated by DMCL and excluded from Git.",
+      "",
+      "- `minecraft/src/` contains Minecraft development sources when prepared.",
+      "- `mods/<mod-id>/<mod-version>/source-code/` contains verified upstream sources or a sources jar.",
+      "- `mods/<mod-id>/<mod-version>/decompiled-code/` contains CFR output from the exact runtime jar.",
+      "- Each mod has `src/` as DMCL's stable path, plus `SOURCE.md` and `index/`.",
+    ].join("\n") + "\n",
+    "utf8",
+  );
+}
+
+function readProjectSourceIndex(root: string): ProjectSourceIndex | null {
+  try {
+    const index = JSON.parse(fs.readFileSync(path.join(root, "index.json"), "utf8")) as ProjectSourceIndex;
+    return index.schema === 1 && Array.isArray(index.mods) ? index : null;
+  } catch {
+    return null;
+  }
+}
+
+function mergeProjectedMods(existing: ModSourceEntry[], incoming: ModSourceEntry[]): ModSourceEntry[] {
+  const merged = new Map<string, ModSourceEntry>();
+  for (const mod of existing) merged.set(`${mod.modId}\u0000${mod.modVersion}`, mod);
+  for (const mod of incoming) merged.set(`${mod.modId}\u0000${mod.modVersion}`, mod);
+  return [...merged.values()].sort((a, b) => {
+    const byId = a.modId.localeCompare(b.modId);
+    return byId !== 0 ? byId : b.modVersion.localeCompare(a.modVersion, undefined, { numeric: true });
+  });
+}
+
+const projectSourceWrites = new Map<string, Promise<unknown>>();
+
+async function withProjectSourceWrite<T>(projectPath: string, write: () => Promise<T>): Promise<T> {
+  const resolved = path.resolve(projectPath);
+  const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  const previous = projectSourceWrites.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(write);
+  projectSourceWrites.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (projectSourceWrites.get(key) === current) projectSourceWrites.delete(key);
+  }
+}
+
 async function writeProjectSourceProjection(
   projectPath: string,
   minecraft: MinecraftSourceEntry,
   mods: ModSourceEntry[],
 ): Promise<string> {
+  return withProjectSourceWrite(projectPath, () => writeProjectSourceProjectionUnlocked(projectPath, minecraft, mods));
+}
+
+async function writeProjectSourceProjectionUnlocked(
+  projectPath: string,
+  minecraft: MinecraftSourceEntry,
+  mods: ModSourceEntry[],
+): Promise<string> {
   const root = getProjectSourceRoot(projectPath);
+  mods = mergeProjectedMods(readProjectSourceIndex(root)?.mods ?? [], mods);
   await fs.promises.rm(root, { recursive: true, force: true });
   await fs.promises.mkdir(root, { recursive: true });
   await ensureProjectGitExclude(projectPath);
   await projectSourceLink(minecraft.sourcePath, path.join(root, "minecraft", "src"));
   for (const mod of mods) {
-    await projectSourceLink(
-      mod.sourcePath,
-      path.join(root, "mods", safeSourceSegment(mod.modId), safeSourceSegment(mod.modVersion), "src"),
-    );
+    await projectModSourceLink(root, mod);
   }
   const index: ProjectSourceIndex = {
     schema: 1,
@@ -921,18 +1567,79 @@ async function writeProjectSourceProjection(
     "# DMCL 开发源码\n\n此目录由 DMCL 自动生成并已排除 Git 提交。`minecraft/src` 是当前 MC 源码，`mods` 保存前置模组源码入口。\n",
     "utf8",
   );
+  await writeProjectSourceReadme(root);
   return root;
+}
+
+/**
+ * Adds an adaptation-center source unit to the project's visible source tree.
+ * Existing Minecraft and previously selected mod projections remain in place.
+ */
+export async function projectExternalModSource(projectPath: string, mod: ModSourceEntry): Promise<{
+  rootPath: string;
+  modSourcePath: string;
+}> {
+  return withProjectSourceWrite(projectPath, () => projectExternalModSourceUnlocked(projectPath, mod));
+}
+
+async function projectExternalModSourceUnlocked(projectPath: string, mod: ModSourceEntry): Promise<{
+  rootPath: string;
+  modSourcePath: string;
+}> {
+  const rootPath = getProjectSourceRoot(projectPath);
+  const existing = readProjectSourceIndex(rootPath);
+  await fs.promises.mkdir(rootPath, { recursive: true });
+  await ensureProjectGitExclude(projectPath);
+  await projectModSourceLink(rootPath, mod);
+  const index: ProjectSourceIndex = {
+    schema: 1,
+    generatedAt: new Date().toISOString(),
+    projectPath: path.resolve(projectPath),
+    minecraft: existing?.minecraft,
+    mods: mergeProjectedMods(existing?.mods ?? [], [mod]),
+  };
+  await fs.promises.writeFile(path.join(rootPath, "index.json"), JSON.stringify(index, null, 2) + "\n", "utf8");
+  await writeProjectSourceReadme(rootPath);
+  return {
+    rootPath,
+    modSourcePath: path.join(
+      rootPath,
+      "mods",
+      safeSourceSegment(mod.modId),
+      safeSourceSegment(mod.modVersion),
+      readableProjectModFolder(mod),
+    ),
+  };
 }
 
 export function getProjectSourceStatus(projectPath: string): ProjectSourceStatus {
   const rootPath = getProjectSourceRoot(projectPath);
   try {
-    const index = JSON.parse(fs.readFileSync(path.join(rootPath, "index.json"), "utf8")) as ProjectSourceIndex;
+    const index = readProjectSourceIndex(rootPath);
+    if (!index) throw new Error("Project source index is unavailable");
+    const mods = (index.mods ?? []).map((mod) => {
+      const reportPath = mod.reportPath;
+      return {
+        modId: mod.modId,
+        modName: mod.modName,
+        modVersion: mod.modVersion,
+        sourceKind: mod.sourceKind,
+        confidence: mod.confidence,
+        license: mod.license,
+        reportPath,
+        reportFilePath: reportPath
+          ? path.join(rootPath, "mods", safeSourceSegment(mod.modId), safeSourceSegment(mod.modVersion), reportPath)
+          : undefined,
+      };
+    });
+    const minecraftReady = !!index.minecraft && fs.existsSync(path.join(rootPath, "minecraft", "src"));
     return {
-      ready: index.schema === 1 && fs.existsSync(path.join(rootPath, "minecraft", "src")),
+      ready: index.schema === 1 && (minecraftReady || mods.length > 0),
       rootPath,
-      minecraftPath: path.join(rootPath, "minecraft", "src"),
+      minecraftReady,
+      minecraftPath: minecraftReady ? path.join(rootPath, "minecraft", "src") : undefined,
       modCount: index.mods?.length ?? 0,
+      mods,
       generatedAt: index.generatedAt,
     };
   } catch {
@@ -947,8 +1654,14 @@ async function prepareProjectSources(
   force: boolean,
   options: Pick<MaterializeOptions, "isCancelled" | "onProcess" | "log"> & {
     onDependencyProgress?: (found: number, prepared: number, failures: number) => void;
+    runtimeModPaths?: string[];
+    includeGradleDependencies?: boolean;
+    includeRuntimeMods?: boolean;
   },
 ): Promise<{ rootPath: string; mods: ModSourceEntry[]; failures: number }> {
+  const existingMods = readProjectSourceIndex(getProjectSourceRoot(projectPath))?.mods ?? [];
+  const initialRootPath = await writeProjectSourceProjection(projectPath, minecraft, existingMods);
+  options.log?.(`项目源码入口已创建：${initialRootPath}`);
   const dependencies = await resolveModDependencies(projectPath, options);
   options.onDependencyProgress?.(dependencies.length, 0, 0);
   options.log?.(`检测到 ${dependencies.length} 个带模组元数据的 Gradle 依赖`);
@@ -965,9 +1678,10 @@ async function prepareProjectSources(
     }
     options.onDependencyProgress?.(dependencies.length, mods.length, failures);
   }
+  const projectedMods = mergeProjectedMods(existingMods, mods);
   return {
-    rootPath: await writeProjectSourceProjection(projectPath, minecraft, mods),
-    mods,
+    rootPath: await writeProjectSourceProjection(projectPath, minecraft, projectedMods),
+    mods: projectedMods,
     failures,
   };
 }
@@ -1071,9 +1785,20 @@ class MinecraftSourceManager {
 
   private async prepareTarget(target: SourceTarget, request: SourceTaskRequest): Promise<MinecraftSourceEntry | null> {
     const outputDir = getMinecraftSourceUnitDir(target.loader, target.mcVersion, target.mapping);
-    if (!request.force && sourceUnitReady(outputDir)) {
-      this.log(`${target.mcVersion} 已存在，跳过`);
-      return null;
+    if (!request.force) {
+      const wasReady = sourceUnitReady(outputDir);
+      const ready = wasReady || await repairMinecraftSourceUnit(outputDir, (line) => this.log(line));
+      if (ready) {
+        if (wasReady) {
+          this.log(`${target.mcVersion} 已存在，跳过`);
+          return null;
+        }
+        const repaired = listMinecraftSourceEntries().find((entry) => entry.path === outputDir);
+        if (repaired) {
+          this.log(`${target.mcVersion} 的空源码缓存已自动修复`);
+          return repaired;
+        }
+      }
     }
 
     const directProject = request.projectPath ? path.resolve(request.projectPath) : null;
@@ -1215,7 +1940,11 @@ class MinecraftSourceManager {
             this.task.currentPhase = request.includeDependencies === false ? "linking" : "dependencies";
             const projection = request.includeDependencies === false
               ? {
-                rootPath: await writeProjectSourceProjection(request.projectPath, minecraftEntry, []),
+                rootPath: await writeProjectSourceProjection(
+                  request.projectPath,
+                  minecraftEntry,
+                  readProjectSourceIndex(getProjectSourceRoot(request.projectPath))?.mods ?? [],
+                ),
                 mods: [] as ModSourceEntry[],
                 failures: 0,
               }
@@ -1234,6 +1963,9 @@ class MinecraftSourceManager {
                     this.task.dependenciesPrepared = prepared;
                     this.task.dependencyFailures = failures;
                   },
+                  runtimeModPaths: request.runtimeModPaths,
+                  includeGradleDependencies: request.includeGradleDependencies,
+                  includeRuntimeMods: request.includeRuntimeMods,
                 },
               );
             this.currentProcess = null;
