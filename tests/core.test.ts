@@ -8,6 +8,7 @@ import { injectBuildscriptMirrors } from "../src/core/maven.js";
 import { mojangLibraryAppliesToCurrentOs, collectMavenizerLibraryArtifacts } from "../src/core/forge-mavenizer.js";
 import { pascalCase } from "../src/core/scaffold.js";
 import { serializeMatrixResult } from "../src/workspace/matrix.js";
+import { detectProject } from "../src/workspace/detect.js";
 import { inferModDir } from "../src/workspace/project-meta.js";
 import {
   neoMdkFallbackCandidates,
@@ -118,6 +119,41 @@ describe("inferModDir", () => {
   it("uses project root for single-dir layout", () => {
     const p = path.join("D:", "mods", "standalone");
     assert.equal(inferModDir(p, "standalone"), path.resolve(p));
+  });
+});
+
+describe("project detection", () => {
+  it("recognizes NeoForge properties written with Windows CRLF endings", () => {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), "dmcl-detect-crlf-"));
+    try {
+      fs.writeFileSync(path.join(projectPath, "gradlew.bat"), "@echo off\r\n", "utf8");
+      fs.writeFileSync(
+        path.join(projectPath, "build.gradle"),
+        "plugins { id 'net.neoforged.moddev' version '2.0.141' }\r\n",
+        "utf8",
+      );
+      fs.writeFileSync(path.join(projectPath, "gradle.properties"), [
+        "minecraft_version=1.21.1",
+        "neo_version=21.1.233",
+        "mod_id=linker",
+        "mod_name=Linker",
+        "mod_version=0.1.6",
+        "mod_group_id=com.example.linker",
+      ].join("\r\n") + "\r\n", "utf8");
+
+      assert.deepEqual(detectProject(projectPath), {
+        loader: "neoforge",
+        mcVersion: "1.21.1",
+        modId: "linker",
+        displayName: "Linker",
+        modVersion: "0.1.6",
+        group: "com.example.linker",
+        mappings: "mojmap",
+        projectPath,
+      });
+    } finally {
+      fs.rmSync(projectPath, { recursive: true, force: true });
+    }
   });
 });
 

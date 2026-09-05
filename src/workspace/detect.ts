@@ -7,7 +7,7 @@ import { getProjectsRoot } from "./paths.js";
 function readProps(file: string): Record<string, string> {
   if (!fs.existsSync(file)) return {};
   const out: Record<string, string> = {};
-  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
     const m = line.match(/^\s*([^#=\s]+)\s*=\s*(.*)$/);
     if (m) out[m[1]] = m[2].trim();
   }
